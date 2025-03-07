@@ -1,0 +1,51 @@
+CLANGCPP := clang++
+CPP := g++
+
+COMPILER_TARGET_DIR := Compiler
+BINARY_TARGET_DIR := Bin
+RUNTIME_TARGET_DIR := Runtime
+
+COMPILER_SRC_JIT := $(COMPILER_TARGET_DIR)/llvm-test-jit.cpp 
+COMPILER_BIN_JIT := $(BINARY_TARGET_DIR)/goo-jit
+
+COMPILER_SRC := $(COMPILER_TARGET_DIR)/goo.cpp 
+COMPILER_BIN := $(BINARY_TARGET_DIR)/goo
+COMPILER_LINK := -lLLVM-19
+
+RUNTIME_SRC := $(RUNTIME_TARGET_DIR)/Runtime.cpp 
+RUNTIME_OBJ_FILE := $(RUNTIME_TARGET_DIR)/Runtime.o
+
+ENTRY_FILE := Entry.cpp
+ENTRY_BIN := $(BINARY_TARGET_DIR)/Entry
+
+OUTPUT_OBJ_FILE := Output.o
+
+SOURCE_FILE := ok.goo
+
+FINAL_BIN := $(BINARY_TARGET_DIR)/hope
+
+MAKE := make
+
+EXTRA_FLAGS ?=
+
+default: all
+
+compiler:
+	$(CPP) $(COMPILER_SRC) $(COMPILER_LINK) -o $(COMPILER_BIN)
+
+compiler-jit:
+	$(CPP) $(COMPILER_SRC_JIT) $(COMPILER_LINK) -o $(COMPILER_BIN_JIT)
+
+runtime:
+	$(CLANGCPP) -c $(RUNTIME_SRC) -o $(RUNTIME_OBJ_FILE)
+
+run-compiler:
+	bash -c "./$(COMPILER_BIN) < $(SOURCE_FILE)"
+
+entry:
+	$(CLANGCPP) $(ENTRY_FILE) $(OUTPUT_OBJ_FILE) $(RUNTIME_OBJ_FILE) -o $(FINAL_BIN)
+
+execute:
+	$(MAKE) run-compiler
+	$(MAKE) entry
+	bash -c "./$(FINAL_BIN) $(EXTRA_FLAGS)"

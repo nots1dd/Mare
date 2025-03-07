@@ -1,0 +1,74 @@
+extern putchard(method);
+extern printd(method);
+extern sqrtd(method);
+
+# externs are to be declared this way for now as we can only extern methods with double:
+# extern <method>(method);
+
+# Square root (sqrt)
+fn unary?(v)
+  sqrtd(v);
+
+fn fact(v)
+  if v < 2 then 1 else v * fact(v-1);
+
+fn binary~(a b)
+   if a < b then 
+     b 
+   else 
+     a;
+
+fn unary!(v)
+  if v then 0 else 1;
+
+# Unary negate.
+fn unary-(v)
+  0-v;
+
+# fnine > with the same precedence as <.
+fn binary> 10 (LHS RHS)
+  RHS < LHS;
+
+# Binary logical or, which does not short circuit.
+fn binary| 5 (LHS RHS)
+  if LHS then
+    1
+  else if RHS then
+    1
+  else
+    0;
+
+# Binary logical and, which does not short circuit.
+fn binary& 6 (LHS RHS)
+  if !LHS then
+    0
+  else
+    !!RHS;
+
+# fnine = with slightly lower precedence than relationals.
+fn binary = 9 (LHS RHS)
+  !(LHS < RHS | LHS > RHS);
+
+# fnine ':' for sequencing: as a low-precedence operator that ignores operands
+# and just returns the RHS.
+fn binary : 1 (x y) y;
+
+fn printstar(n) -> void
+  for i = 1, i < n, 1.0 in
+    "*";
+
+fn PrintBetterStar(x y) -> void
+  for i = 1, i < x, 1.0 in 
+    for j = i, j < y, 1.0 in 
+      "* ^"; # ascii 42 = '*'
+
+fn max(a b) if a > b then b else a;
+
+fn printString() -> void "Just testing if this works lmao!!*\n";
+
+fn success() "\nyay you got it!\n"; # will just print out the string
+
+fn failed() -> double "Failed!\n";
+
+fn fail(x)
+  var n = ?121 in if x < n then success() else failed();
