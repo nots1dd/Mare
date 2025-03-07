@@ -22,7 +22,7 @@ OUTPUT_OBJ_FILE := Output.o
 
 SOURCE_FILE := ok.goo
 
-FINAL_BIN := $(BINARY_TARGET_DIR)/hope
+FINAL_BIN := $(BINARY_TARGET_DIR)/entry-ffi
 
 MAKE := make
 
