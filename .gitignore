@@ -1,3 +1,8 @@
 */**/*.o
 Bin/
 .cache/
+*/**/*.out
+build/
+
+*.o
+OutputBin

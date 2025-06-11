@@ -31,10 +31,11 @@ inline auto getFunction(std::string Name) -> llvm::Function*
 
 /// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
 /// the function.  This is used for mutable variables etc.
-static auto CreateEntryBlockAlloca(llvm::Function* TheFunction, StringRef VarName) -> AllocaInst*
+static auto CreateEntryBlockAlloca(llvm::Function* TheFunction, llvm::Type* AllocType,
+                                   llvm::StringRef VarName) -> llvm::AllocaInst*
 {
-  IRBuilder<> TmpB(&TheFunction->getEntryBlock(), TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+  llvm::IRBuilder<> TmpB(&TheFunction->getEntryBlock(), TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(AllocType, nullptr, VarName);
 }
 
 inline auto NumberExprAST::codegen() -> Value*
@@ -45,12 +46,13 @@ inline auto NumberExprAST::codegen() -> Value*
 inline auto VariableExprAST::codegen() -> Value*
 {
   // Look this variable up in the function.
-  Value* V = NamedValues[Name];
+  AllocaInst* V = NamedValues[Name];
   if (!V)
     return LogErrorV("(Var) Unknown variable name");
 
-  // Load the value.
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), V, Name.c_str());
+  // Use stored type or infer from alloca
+  Type* loadType = VarType ? VarType : V->getAllocatedType();
+  return Builder->CreateLoad(loadType, V, Name.c_str());
 }
 
 inline auto UnaryExprAST::codegen() -> Value*
@@ -154,59 +156,12 @@ inline auto StringExprAST::codegen() -> llvm::Value*
     new llvm::GlobalVariable(*TheModule, Str->getType(), true, llvm::GlobalValue::PrivateLinkage,
                              llvm::cast<llvm::Constant>(Str), ".str");
 
-  // Get the pointer type (i8*)
-  llvm::Type* Int8Ty    = llvm::Type::getInt8Ty(*TheContext);
-  llvm::Type* Int8PtrTy = llvm::PointerType::get(Int8Ty, 0);
+  // Generate GEP to get pointer to the string data
+  llvm::Value* Zero      = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0);
+  llvm::Value* StringPtr = Builder->CreateGEP(GV->getValueType(), GV, {Zero, Zero}, "strptr");
 
-  // Generate GEP (use GV->getType()->getElementType())
-  llvm::Value* Zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0);
-  llvm::Value* GEP  = Builder->CreateGEP(GV->getValueType(), GV, {Zero, Zero}, "strptr");
-
-  // Get or declare printf
-  llvm::Function* PrintfFunc = TheModule->getFunction("printf");
-  if (!PrintfFunc)
-  {
-    llvm::FunctionType* PrintfType = llvm::FunctionType::get(
-      llvm::Type::getInt32Ty(*TheContext),
-      {llvm::PointerType::get(llvm::Type::getInt8Ty(*TheContext), 0)}, true);
-    PrintfFunc =
-      llvm::Function::Create(PrintfType, llvm::Function::ExternalLinkage, "printf", *TheModule);
-  }
-
-  // Create a format string ("%s") as a global constant
-  llvm::Value* FormatStr = Builder->CreateGlobalStringPtr("%s", ".fmt");
-
-  // Call printf with (FormatStr, GEP)
-  llvm::Value* PrintfCall = Builder->CreateCall(PrintfFunc, {FormatStr, GEP}, "printf_call");
-
-  // Convert printf's return value from i32 to double
-  llvm::Value* PrintfCallDouble =
-    Builder->CreateSIToFP(PrintfCall, llvm::Type::getDoubleTy(*TheContext), "printf_call_d");
-
-  // Compare printf's return value with 0.0
-  llvm::Value* SuccessCheck = Builder->CreateFCmpONE(
-    PrintfCallDouble, llvm::ConstantFP::get(llvm::Type::getDoubleTy(*TheContext), 0.0),
-    "success_check");
-
-  // Return 0.0 if success, -1.0 if failure
-  return Builder->CreateSelect(
-    SuccessCheck, llvm::ConstantFP::get(llvm::Type::getDoubleTy(*TheContext), 0.0),
-    llvm::ConstantFP::get(llvm::Type::getDoubleTy(*TheContext), -1.0), "ret_val");
-}
-
-inline auto getPrintFunction() -> llvm::Function*
-{
-  // printf function prototype: int printf(char*, ...)
-  llvm::FunctionType* PrintfType =
-    llvm::FunctionType::get(llvm::Type::getInt32Ty(*TheContext),
-                            {llvm::PointerType::get(llvm::Type::getInt8Ty(*TheContext), 0)},
-                            true // Variadic
-    );
-
-  llvm::Function* PrintfFunc =
-    llvm::Function::Create(PrintfType, llvm::Function::ExternalLinkage, "printf", *TheModule);
-
-  return PrintfFunc;
+  // Return the string pointer directly
+  return StringPtr;
 }
 
 inline auto IfExprAST::codegen() -> Value*
@@ -254,7 +209,15 @@ inline auto IfExprAST::codegen() -> Value*
   // Emit merge block.
   TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
-  PHINode* PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+
+  Type* ResultType = ThenV->getType();
+  if (ResultType != ElseV->getType())
+  {
+    LogErrorV("Mismatched types in 'if' expression");
+    return nullptr;
+  }
+
+  PHINode* PN = Builder->CreatePHI(ResultType, 2, "iftmp");
 
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
@@ -284,34 +247,34 @@ inline auto ForExprAST::codegen() -> Value*
 {
   llvm::Function* TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Create an alloca for the variable in the entry block.
-  AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-
-  // Emit the start code first, without 'variable' in scope.
+  // Emit the start code first to determine the loop variable type
   Value* StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
+  // Get the type from the start value
+  Type* LoopVarType = StartVal->getType();
+
+  // Create an alloca for the variable in the entry block using dynamic type
+  AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, LoopVarType, VarName);
+
   // Store the value into the alloca.
   Builder->CreateStore(StartVal, Alloca);
 
-  // Make the new basic block for the loop header, inserting after current
-  // block.
+  // Make the new basic block for the loop header, inserting after current block.
   BasicBlock* LoopBB = BasicBlock::Create(*TheContext, "loop", TheFunction);
-
   // Insert an explicit fall through from the current block to the LoopBB.
   Builder->CreateBr(LoopBB);
-
   // Start insertion in LoopBB.
   Builder->SetInsertPoint(LoopBB);
 
-  // Within the loop, the variable is defined equal to the PHI node.  If it
+  // Within the loop, the variable is defined equal to the PHI node. If it
   // shadows an existing variable, we have to restore it, so save it now.
   AllocaInst* OldVal   = NamedValues[VarName];
   NamedValues[VarName] = Alloca;
 
-  // Emit the body of the loop.  This, like any other expr, can change the
-  // current BB.  Note that we ignore the value computed by the body, but don't
+  // Emit the body of the loop. This, like any other expr, can change the
+  // current BB. Note that we ignore the value computed by the body, but don't
   // allow an error.
   if (!Body->codegen())
     return nullptr;
@@ -326,8 +289,19 @@ inline auto ForExprAST::codegen() -> Value*
   }
   else
   {
-    // If not specified, use 1.0.
-    StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
+    // If not specified, use appropriate default based on type
+    if (LoopVarType->isFloatingPointTy() || LoopVarType->isDoubleTy())
+    {
+      StepVal = ConstantFP::get(LoopVarType, 1.0);
+    }
+    else if (LoopVarType->isIntegerTy())
+    {
+      StepVal = ConstantInt::get(LoopVarType, 1);
+    }
+    else
+    {
+      return LogErrorV("Unsupported type for loop variable");
+    }
   }
 
   // Compute the end condition.
@@ -335,21 +309,47 @@ inline auto ForExprAST::codegen() -> Value*
   if (!EndCond)
     return nullptr;
 
-  // Reload, increment, and restore the alloca.  This handles the case where
+  // Reload, increment, and restore the alloca. This handles the case where
   // the body of the loop mutates the variable.
-  Value* CurVar  = Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName.c_str());
-  Value* NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+  Value* CurVar = Builder->CreateLoad(LoopVarType, Alloca, VarName.c_str());
+
+  Value* NextVar = nullptr;
+  if (LoopVarType->isFloatingPointTy() || LoopVarType->isDoubleTy())
+  {
+    NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+  }
+  else if (LoopVarType->isIntegerTy())
+  {
+    NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
+  }
+  else
+  {
+    return LogErrorV("Unsupported type for loop arithmetic");
+  }
+
   Builder->CreateStore(NextVar, Alloca);
 
-  // Convert condition to a bool by comparing non-equal to 0.0.
-  EndCond = Builder->CreateFCmpONE(EndCond, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+  // Convert condition to a bool by comparing non-equal to appropriate zero value
+  Value* ZeroValue = nullptr;
+  if (EndCond->getType()->isFloatingPointTy() || EndCond->getType()->isDoubleTy())
+  {
+    ZeroValue = ConstantFP::get(EndCond->getType(), 0.0);
+    EndCond   = Builder->CreateFCmpONE(EndCond, ZeroValue, "loopcond");
+  }
+  else if (EndCond->getType()->isIntegerTy())
+  {
+    ZeroValue = ConstantInt::get(EndCond->getType(), 0);
+    EndCond   = Builder->CreateICmpNE(EndCond, ZeroValue, "loopcond");
+  }
+  else
+  {
+    return LogErrorV("Unsupported type for loop condition");
+  }
 
   // Create the "after loop" block and insert it.
   BasicBlock* AfterBB = BasicBlock::Create(*TheContext, "afterloop", TheFunction);
-
   // Insert the conditional branch into the end of LoopEndBB.
   Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
-
   // Any new code will be inserted in AfterBB.
   Builder->SetInsertPoint(AfterBB);
 
@@ -359,68 +359,48 @@ inline auto ForExprAST::codegen() -> Value*
   else
     NamedValues.erase(VarName);
 
-  // for expr always returns 0.0.
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
+  // for expr returns zero value of the loop variable type
+  return Constant::getNullValue(LoopVarType);
 }
 
-inline auto VarExprAST::codegen() -> Value*
+inline auto VarExprAST::codegen() -> llvm::Value*
 {
-  std::vector<AllocaInst*> OldBindings;
-
   llvm::Function* TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Register all variables and emit their initializer.
-  for (auto& i : VarNames)
+  // Generate initializer
+  llvm::Value* InitVal = nullptr;
+  if (Init)
   {
-    const std::string& VarName = i.first;
-    ExprAST*           Init    = i.second.get();
-
-    // Emit the initializer before adding the variable to scope, this prevents
-    // the initializer from referencing the variable itself, and permits stuff
-    // like this:
-    //  var a = 1 in
-    //    var a = a in ...   # refers to outer 'a'.
-    Value* InitVal;
-    if (Init)
-    {
-      InitVal = Init->codegen();
-      if (!InitVal)
-        return nullptr;
-    }
-    else
-    { // If not specified, use 0.0.
-      InitVal = ConstantFP::get(*TheContext, APFloat(0.0));
-    }
-
-    AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    Builder->CreateStore(InitVal, Alloca);
-
-    // Remember the old variable binding so that we can restore the binding when
-    // we unrecurse.
-    OldBindings.push_back(NamedValues[VarName]);
-
-    // Remember this binding.
-    NamedValues[VarName] = Alloca;
+    InitVal = Init->codegen();
+    if (!InitVal)
+      return nullptr;
+  }
+  else
+  {
+    // Default to 0.0
+    InitVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0));
   }
 
-  // Codegen the body, now that all vars are in scope.
-  Value* BodyVal = Body->codegen();
-  if (!BodyVal)
-    return nullptr;
+  llvm::Type* InitType = InitVal->getType();
+  InitType->print(llvm::errs());
 
-  // Pop all our variables from scope.
-  for (unsigned i = 0, e = VarNames.size(); i != e; ++i)
-    NamedValues[VarNames[i].first] = OldBindings[i];
+  // Allocate space for the variable in the entry block
+  llvm::AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, InitType, VarName);
 
-  // Return the body computation.
-  return BodyVal;
+  // Store the initializer value
+  Builder->CreateStore(InitVal, Alloca);
+
+  // Register in symbol table
+  NamedValues[VarName] = Alloca;
+
+  // Return the value just assigned (or null if you'd prefer this to be void)
+  return InitVal;
 }
 
 inline auto PrototypeAST::codegen() -> llvm::Function*
 {
   // Make the function type: RetType(ArgType, ArgType, ...) etc.
-  std::vector<Type*> ArgTypes(Args.size(), Type::getDoubleTy(*TheContext));
-  FunctionType*      FT = FunctionType::get(RetType, ArgTypes, false); // Use stored return type
+  FunctionType* FT = FunctionType::get(RetType, ArgTypes, false); // Use stored return type
 
   llvm::Function* F =
     llvm::Function::Create(FT, llvm::Function::ExternalLinkage, Name, TheModule.get());
@@ -436,7 +416,8 @@ inline auto PrototypeAST::codegen() -> llvm::Function*
 inline auto FunctionAST::codegen() -> llvm::Function*
 {
   // Transfer ownership of the prototype to the FunctionProtos map.
-  auto& P                          = *Proto;
+  auto& P = *Proto;
+  fprintf(stderr, "-- Generating Code for '%s'\n", P.getName().c_str());
   FunctionProtos[Proto->getName()] = std::move(Proto);
   llvm::Function* TheFunction      = getFunction(P.getName());
   if (!TheFunction)
@@ -455,7 +436,7 @@ inline auto FunctionAST::codegen() -> llvm::Function*
   for (auto& Arg : TheFunction->args())
   {
     // Create an alloca for this variable.
-    AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+    AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getType(), Arg.getName());
 
     // Store the initial value into the alloca.
     Builder->CreateStore(&Arg, Alloca);
@@ -484,4 +465,38 @@ inline auto FunctionAST::codegen() -> llvm::Function*
   if (P.isBinaryOp())
     BinopPrecedence.erase(P.getOperatorName());
   return nullptr;
+}
+
+inline auto BlockExprAST::codegen() -> llvm::Value*
+{
+  llvm::Value* Last = nullptr;
+
+  for (auto& Expr : Expressions)
+  {
+    Last = Expr->codegen();
+    if (!Last)
+      return nullptr;
+
+    // If the current basic block now ends in a return, break early
+    llvm::BasicBlock* BB = Builder->GetInsertBlock();
+    if (BB && BB->getTerminator())
+      break;
+  }
+
+  return Last;
+}
+
+auto ReturnExprAST::codegen() -> llvm::Value*
+{
+  if (Expr)
+  {
+    llvm::Value* RetVal = Expr->codegen();
+    if (!RetVal)
+      return nullptr;
+
+    return Builder->CreateRet(RetVal);
+  }
+
+  // For void return
+  return Builder->CreateRetVoid();
 }

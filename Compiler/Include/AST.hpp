@@ -20,6 +20,16 @@ public:
   virtual auto codegen() -> Value* = 0;
 };
 
+class BlockExprAST : public ExprAST
+{
+  std::vector<std::unique_ptr<ExprAST>> Expressions;
+
+public:
+  BlockExprAST(std::vector<std::unique_ptr<ExprAST>> Exprs) : Expressions(std::move(Exprs)) {}
+
+  auto codegen() -> llvm::Value* override;
+};
+
 /// NumberExprAST - Expression class for numeric literals like "1.0".
 class NumberExprAST : public ExprAST
 {
@@ -45,12 +55,14 @@ public:
 class VariableExprAST : public ExprAST
 {
   std::string Name;
-
+  Type*       VarType; // Store the type
 public:
-  VariableExprAST(std::string Name) : Name(std::move(Name)) {}
+  VariableExprAST(std::string Name, Type* type = nullptr) : Name(std::move(Name)), VarType(type) {}
 
   auto               codegen() -> Value* override;
   [[nodiscard]] auto getName() const -> const std::string& { return Name; }
+  void               setType(Type* type) { VarType = type; }
+  [[nodiscard]] auto getType() const -> Type* { return VarType; }
 };
 
 /// UnaryExprAST - Expression class for a unary operator.
@@ -130,20 +142,29 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// VarExprAST - Expression class for var/in
+/// VarExprAST - Expression class for var keyword
 class VarExprAST : public ExprAST
 {
-  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
-  std::unique_ptr<ExprAST>                                      Body;
+  std::string              VarName;
+  std::unique_ptr<ExprAST> Init;
 
 public:
-  VarExprAST(std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
-             std::unique_ptr<ExprAST>                                      Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body))
+  VarExprAST(std::string name, std::unique_ptr<ExprAST> init)
+      : VarName(std::move(name)), Init(std::move(init))
   {
   }
 
-  auto codegen() -> Value* override;
+  auto codegen() -> llvm::Value* override;
+};
+
+class ReturnExprAST : public ExprAST
+{
+  std::unique_ptr<ExprAST> Expr;
+
+public:
+  ReturnExprAST(std::unique_ptr<ExprAST> Expr) : Expr(std::move(Expr)) {}
+
+  auto codegen() -> llvm::Value* override;
 };
 
 /// PrototypeAST - This class represents the "prototype" for a function,
@@ -153,20 +174,24 @@ class PrototypeAST
 {
   std::string              Name;
   std::vector<std::string> Args;
+  std::vector<llvm::Type*> ArgTypes;
   bool                     IsOperator;
   unsigned                 Precedence; // Precedence if a binary op.
-  llvm::Type*              RetType;    // Return type (double or void)
+  llvm::Type*              RetType;
 
 public:
-  PrototypeAST(std::string Name, std::vector<std::string> Args, llvm::Type* RetType,
-               bool IsOperator = false, unsigned Prec = 0)
-      : Name(std::move(Name)), Args(std::move(Args)), RetType(RetType), IsOperator(IsOperator),
-        Precedence(Prec)
+  PrototypeAST(std::string Name, std::vector<std::string> Args, std::vector<llvm::Type*> ArgTypes,
+               llvm::Type* RetType, bool IsOperator = false, unsigned Prec = 0)
+      : Name(std::move(Name)), Args(std::move(Args)), ArgTypes(std::move(ArgTypes)),
+        RetType(RetType), IsOperator(IsOperator), Precedence(Prec)
   {
+    assert(Args.size() == ArgTypes.size() && "Argument names and types must match in count");
   }
 
   auto               codegen() -> Function*;
   [[nodiscard]] auto getName() const -> const std::string& { return Name; }
+  [[nodiscard]] auto getArgs() const -> const std::vector<std::string>& { return Args; }
+  [[nodiscard]] auto getArgTypes() const -> const std::vector<llvm::Type*>& { return ArgTypes; }
 
   [[nodiscard]] auto isUnaryOp() const -> bool { return IsOperator && Args.size() == 1; }
   [[nodiscard]] auto isBinaryOp() const -> bool { return IsOperator && Args.size() == 2; }
@@ -197,7 +222,14 @@ public:
   {
   }
 
-  auto codegen() -> Function*;
+  auto               codegen() -> Function*;
+  [[nodiscard]] auto getName() const -> const std::string&
+  {
+    if (!Proto)
+      throw std::runtime_error("FunctionAST::getName() called with null Prototype");
+    return Proto->getName();
+  }
+  [[nodiscard]] auto getReturnType() const -> llvm::Type* { return Proto->getReturnType(); }
 };
 
 } // namespace GooAST

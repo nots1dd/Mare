@@ -1,8 +1,12 @@
 #pragma once
 
 #include "AST.hpp"
+#include "CmdLineParser.hpp"
 #include "Colors.h"
 #include "Compiler.hpp"
+#include <cstdlib>
+#include <fstream>
+#include <llvm/IR/DerivedTypes.h>
 
 using namespace GooAST;
 
@@ -11,6 +15,44 @@ static double      NumVal;        // Filled in if tok_number
 static std::string StringVal;
 static bool        isExtern = false;
 
+static auto ParseExpression() -> std::unique_ptr<ExprAST>;
+static auto ParseBlock() -> std::unique_ptr<ExprAST>;
+static auto ParseReturnExpr() -> std::unique_ptr<ExprAST>;
+
+struct FileCoords
+{
+  int line = 1;
+  int col  = 0;
+
+public:
+  void resetLine() { line = 0; }
+  void resetCol() { col = 0; }
+  void resetAll()
+  {
+    resetLine();
+    resetCol();
+  }
+};
+
+static FileCoords fileCoords;
+
+static auto getNextChar() -> int
+{
+  int ch = gooArgs.inputFileStream.get();
+
+  if (ch == '\n')
+  {
+    fileCoords.line++;
+    fileCoords.resetCol();
+  }
+  else
+  {
+    fileCoords.col++;
+  }
+
+  return ch;
+}
+
 /// gettok - Return the next token from standard input.
 static auto gettok() -> int
 {
@@ -18,13 +60,13 @@ static auto gettok() -> int
 
   // Skip any whitespace.
   while (isspace(LastChar))
-    LastChar = getchar();
+    LastChar = getNextChar();
 
   // Handle string literals
   if (LastChar == '"')
   {
     StringVal = "";
-    while ((LastChar = getchar()) != '"' && LastChar != EOF)
+    while ((LastChar = getNextChar()) != '"' && LastChar != EOF)
     {
       StringVal += LastChar;
     }
@@ -32,15 +74,15 @@ static auto gettok() -> int
     if (LastChar == EOF)
       return tok_eof;
 
-    LastChar = getchar(); // Consume closing quote
+    LastChar = getNextChar(); // Consume closing quote
     return tok_string;
   }
 
   // Handle identifiers and keywords
-  if (isalpha(LastChar))
+  if (isalpha(LastChar) || LastChar == '_')
   { // identifier: [a-zA-Z][a-zA-Z0-9]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())))
+    while (isalnum((LastChar = getNextChar())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     if (IdentifierStr == "fn")
@@ -67,6 +109,10 @@ static auto gettok() -> int
       return tok_void;
     if (IdentifierStr == "double")
       return tok_double;
+    if (IdentifierStr == "string")
+      return tok_string;
+    if (IdentifierStr == "ret")
+      return tok_ret;
     return tok_identifier;
   }
 
@@ -77,7 +123,7 @@ static auto gettok() -> int
     do
     {
       NumStr += LastChar;
-      LastChar = getchar();
+      LastChar = getNextChar();
     } while (isdigit(LastChar) || LastChar == '.');
 
     NumVal = strtod(NumStr.c_str(), nullptr);
@@ -88,7 +134,7 @@ static auto gettok() -> int
   if (LastChar == '#')
   {
     do
-      LastChar = getchar();
+      LastChar = getNextChar();
     while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
 
     if (LastChar != EOF)
@@ -98,11 +144,11 @@ static auto gettok() -> int
   // Handle the arrow token '->'
   if (LastChar == '-')
   {
-    LastChar = getchar();
+    LastChar = getNextChar();
     if (LastChar == '>')
     {
-      LastChar = getchar(); // Consume '>'
-      return tok_arrow;     // Return the token for '->'
+      LastChar = getNextChar(); // Consume '>'
+      return tok_arrow;         // Return the token for '->'
     }
     return '-'; // Otherwise, return just '-'
   }
@@ -113,7 +159,7 @@ static auto gettok() -> int
 
   // Otherwise, just return the character as its ASCII value.
   int ThisChar = LastChar;
-  LastChar     = getchar();
+  LastChar     = getNextChar();
   return ThisChar;
 }
 
@@ -144,28 +190,37 @@ static auto GetTokPrecedence() -> int
   return TokPrec;
 }
 
-/// LogError* - These are little helper functions for error handling.
-auto LogError(const char* Str) -> std::unique_ptr<ExprAST>
+[[noreturn]] void FatalError(const char* message)
 {
-  PRINT_ERROR(Str);
+  fprintf(stderr, "-- %s Cursor stopped at line %d, column %d\n", HINT_LABEL, fileCoords.line,
+          fileCoords.col);
+  std::exit(EXIT_FAILURE);
+}
 
-  // Provide additional debugging info
-  fprintf(stderr, "-- %s Check syntax near '%c'.\n", HINT_LABEL, CurTok);
-  fprintf(stderr, "-- %s Review the expected syntax.\n", HINT_LABEL);
+/// LogError* - These are little helper functions for error handling.
+auto LogError(const char* msg) -> std::unique_ptr<ExprAST>
+{
+  // If you have current location tracking:
+  printDiagnostic(ERROR_LABEL, msg, gooArgs.inputFile, fileCoords.line, fileCoords.col,
+                  std::string("Check syntax near token: '") + (char)CurTok + "'");
 
+  FatalError("Exiting compilation.");
   return nullptr;
 }
 
 auto LogErrorP(const char* Str) -> std::unique_ptr<PrototypeAST>
 {
-  PRINT_ERROR(Str);
-  fprintf(stderr, "-- %s Ensure function prototypes are correctly declared.\n", HINT_LABEL);
-  fprintf(stderr, "-- %s Expected Format: <return_type> <function_name>(parameters...)\n",
-          HINT_LABEL);
+  printDiagnostic(
+    ERROR_LABEL, Str,
+    gooArgs.inputPath, // Optionally provide current filename
+    fileCoords.line,   // Line number, if known
+    fileCoords.col,    // Column number, if known
+    "Ensure function prototypes are declared as: extern name(type name, ...) -> return_type");
+
+  FatalError("Exiting compilation due to prototyping errors.");
+
   return nullptr;
 }
-
-static auto ParseExpression() -> std::unique_ptr<ExprAST>;
 
 /// numberexpr ::= number
 static auto ParseNumberExpr() -> std::unique_ptr<ExprAST>
@@ -312,49 +367,23 @@ static auto ParseVarExpr() -> std::unique_ptr<ExprAST>
 {
   getNextToken(); // eat the var.
 
-  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
-
   // At least one variable name is required.
   if (CurTok != tok_identifier)
     return LogError("Expected identifier after 'var'.");
 
-  while (true)
-  {
-    std::string Name = IdentifierStr;
-    getNextToken(); // eat identifier.
+  std::string VarName = IdentifierStr;
+  getNextToken();
 
-    // Read the optional initializer.
-    std::unique_ptr<ExprAST> Init = nullptr;
-    if (CurTok == '=')
-    {
-      getNextToken(); // eat the '='.
+  if (CurTok != '=')
+    return LogError("Expected '=' after variable name");
 
-      Init = ParseExpression();
-      if (!Init)
-        return nullptr;
-    }
-
-    VarNames.emplace_back(Name, std::move(Init));
-
-    // End of var list, exit loop.
-    if (CurTok != ',')
-      break;
-    getNextToken(); // eat the ','.
-
-    if (CurTok != tok_identifier)
-      return LogError("Expected identifier list after 'var'");
-  }
-
-  // At this point, we have to have 'in'.
-  if (CurTok != tok_in)
-    return LogError("Expected 'in' keyword after 'var'");
-  getNextToken(); // eat 'in'.
+  getNextToken(); // eat '='
 
   auto Body = ParseExpression();
   if (!Body)
     return nullptr;
 
-  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+  return std::make_unique<VarExprAST>(VarName, std::move(Body));
 }
 
 static auto ProcessString(std::string& ProcessedStr) -> void
@@ -538,11 +567,38 @@ static auto ParseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS) -> std::un
 ///
 static auto ParseExpression() -> std::unique_ptr<ExprAST>
 {
+  if (CurTok == tok_ret)
+    return ParseReturnExpr();
+
   auto LHS = ParseUnary();
   if (!LHS)
     return nullptr;
 
   return ParseBinOpRHS(0, std::move(LHS));
+}
+
+static auto ParseBlock() -> std::unique_ptr<ExprAST>
+{
+  std::vector<std::unique_ptr<ExprAST>> Exprs;
+
+  while (true)
+  {
+    // End of file or new function, break
+    if (CurTok == tok_eof || CurTok == tok_def || CurTok == tok_extern)
+      break;
+
+    auto Expr = ParseExpression();
+    if (!Expr)
+      return nullptr;
+
+    Exprs.push_back(std::move(Expr));
+
+    // Optional semicolon (skip if you don't require it)
+    if (CurTok == ';')
+      getNextToken();
+  }
+
+  return std::make_unique<BlockExprAST>(std::move(Exprs));
 }
 
 /// prototype
@@ -551,7 +607,7 @@ static auto ParseExpression() -> std::unique_ptr<ExprAST>
 ///   ::= unary LETTER (id)
 static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
 {
-  llvm::Type* RetType = llvm::Type::getDoubleTy(*TheContext); // Default to double
+  llvm::Type* RetType = llvm::Type::getVoidTy(*TheContext); // Default to void
 
   std::string FnName;
   unsigned    Kind             = 0; // 0 = identifier, 1 = unary, 2 = binary.
@@ -595,13 +651,15 @@ static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
       break;
   }
 
+  // FUNCTIONAL ARGUMENTS
+
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
 
   std::vector<std::pair<std::string, llvm::Type*>> Args;
   getNextToken(); // Eat '('
 
-  while (CurTok == tok_identifier || CurTok == tok_double)
+  while (CurTok == tok_identifier || CurTok == tok_double || CurTok == tok_string)
   {
     llvm::Type* ArgType = llvm::Type::getDoubleTy(*TheContext); // Default type
 
@@ -612,9 +670,20 @@ static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
     }
     else if (CurTok == tok_double)
     {
-      getNextToken(); // Eat 'double'
+      getNextToken(); // Eat 'double' (default)
       if (CurTok != tok_identifier)
         return LogErrorP("Expected argument name after 'double'");
+
+      Args.emplace_back(IdentifierStr, ArgType);
+      getNextToken();
+    }
+
+    else if (CurTok == tok_string)
+    {
+      ArgType = llvm::PointerType::getInt8Ty(*TheContext);
+      getNextToken(); // Eat 'string'
+      if (CurTok != tok_identifier)
+        return LogErrorP("Expected argument name after 'string'");
 
       Args.emplace_back(IdentifierStr, ArgType);
       getNextToken();
@@ -625,7 +694,7 @@ static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogErrorP("Expected ')' in argument decl of prototype!");
 
   getNextToken(); // Eat ')'
 
@@ -635,12 +704,18 @@ static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
     getNextToken(); // Consume `->`
     if (CurTok == tok_void)
     {
+      getNextToken(); // Consume 'void' (default return type remains)
       RetType = llvm::Type::getVoidTy(*TheContext);
-      getNextToken(); // Consume 'void'
     }
     else if (CurTok == tok_double)
     {
-      getNextToken(); // Consume 'double' (default return type remains)
+      getNextToken(); // Consume 'double'
+      RetType = llvm::Type::getDoubleTy(*TheContext);
+    }
+    else if (CurTok == tok_string)
+    {
+      getNextToken(); // Eat 'string'
+      RetType = llvm::PointerType::getInt8Ty(*TheContext);
     }
     else
     {
@@ -653,13 +728,18 @@ static auto ParsePrototype() -> std::unique_ptr<PrototypeAST>
     return LogErrorP("Invalid number of operands for operator");
 
   std::vector<std::string> ArgNames;
+  std::vector<llvm::Type*> ArgTypes;
   for (const auto& Arg : Args)
+  {
     ArgNames.push_back(Arg.first);
+    ArgTypes.push_back(Arg.second);
+  }
 
-  return std::make_unique<PrototypeAST>(FnName, ArgNames, RetType, Kind != 0, BinaryPrecedence);
+  return std::make_unique<PrototypeAST>(FnName, ArgNames, ArgTypes, RetType, Kind != 0,
+                                        BinaryPrecedence);
 }
 
-/// definition ::= 'def' prototype expression
+/// definition ::= 'fn' prototype expression
 static auto ParseDefinition() -> std::unique_ptr<FunctionAST>
 {
   getNextToken(); // eat def.
@@ -667,7 +747,7 @@ static auto ParseDefinition() -> std::unique_ptr<FunctionAST>
   if (!Proto)
     return nullptr;
 
-  if (auto E = ParseExpression())
+  if (auto E = ParseBlock())
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   return nullptr;
 }
@@ -678,18 +758,41 @@ static auto ParseTopLevelExpr() -> std::unique_ptr<FunctionAST>
   if (auto E = ParseExpression())
   {
     // Determine the return type based on the expression.
-    llvm::Type* RetType = llvm::Type::getDoubleTy(*TheContext); // Default to double
+    llvm::Type* RetType = llvm::Type::getVoidTy(*TheContext); // Default to void
 
     // Make an anonymous prototype with the return type.
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr", std::vector<std::string>(), RetType);
+    auto Proto = std::make_unique<PrototypeAST>("__anon_expr", std::vector<std::string>(),
+                                                std::vector<llvm::Type*>(), RetType);
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;
+}
+
+static auto ParseReturnExpr() -> std::unique_ptr<ExprAST>
+{
+  getNextToken(); // consume 'return'
+
+  // Support optional return expression (e.g., `return;`)
+  if (CurTok == ';' || CurTok == tok_eof)
+    return std::make_unique<ReturnExprAST>(nullptr);
+
+  // Parse the return value expression directly without going through ParseExpression
+  auto LHS = ParseUnary();
+  if (!LHS)
+    return nullptr;
+  auto RetExpr = ParseBinOpRHS(0, std::move(LHS));
+  if (!RetExpr)
+    return nullptr;
+  return std::make_unique<ReturnExprAST>(std::move(RetExpr));
 }
 
 /// external ::= 'extern' prototype
 static auto ParseExtern() -> std::unique_ptr<PrototypeAST>
 {
   getNextToken(); // Consume 'extern'
+
+  if (CurTok != tok_identifier)
+    return LogErrorP("Expected function name after 'extern'");
+
   return ParsePrototype();
 }

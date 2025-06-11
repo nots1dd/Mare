@@ -33,8 +33,10 @@
 #include <utility>
 #include <vector>
 
-#define __GOO_OBJECT_FILE_NAME__ "Output.o"
-#define __GOO_CPU_STANDARD__     "generic"
+#define __GOO_OBJECT_FILE_NAME__    "GooOutput.o"
+#define __GOO_ASM_FILE_NAME__       "GooOutput.asm"
+#define __GOO_CPU_STANDARD__        "generic"
+#define __GOO_FILE_EXTENSION_STEM__ ".goo"
 
 #define NEWLINE_CHAR '\n'
 
@@ -82,15 +84,16 @@ enum Token
   tok_else = -8,
   tok_for  = -9,
   tok_in   = -10,
+  tok_ret  = -11,
 
   // operators
-  tok_binary = -11,
-  tok_unary  = -12,
+  tok_binary = -12,
+  tok_unary  = -13,
 
   // var definition
-  tok_var    = -13,
-  tok_string = -14,
-  tok_void   = -15,
-  tok_double = -16,
-  tok_arrow  = -17
+  tok_var    = -14,
+  tok_string = -15,
+  tok_void   = -16,
+  tok_double = -17,
+  tok_arrow  = -18
 };

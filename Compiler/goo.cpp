@@ -1,9 +1,15 @@
+#include "Include/CmdLineParser.hpp"
 #include "Include/Colors.h"
 #include "Include/Compiler.hpp"
 #include "Include/Gen.hpp"
 #include "Include/Parser.hpp"
+#include <iostream>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Program.h> // for ExecuteAndWait
 
 using namespace GooAST;
+
+static bool foundMain = false;
 
 //===----------------------------------------------------------------------===//
 // Top-Level parsing and JIT Driver
@@ -23,10 +29,13 @@ static void HandleDefinition()
 {
   if (auto FnAST = ParseDefinition())
   {
+    if (FnAST->getName() == "main" && FnAST->getReturnType() == llvm::Type::getVoidTy(*TheContext))
+    {
+      foundMain = true;
+    }
     if (auto* FnIR = FnAST->codegen())
     {
-      fprintf(stderr, "%s%s -- Read function definition: %s\n", COLOR_UNDERL, COLOR_BLUE,
-              COLOR_RESET);
+      std::cout << COLOR_UNDERL << COLOR_BLUE << "-- Function decl:" << COLOR_RESET << std::endl;
       FnIR->print(errs());
       fprintf(stderr, "\n");
     }
@@ -96,11 +105,7 @@ static void MainLoop()
   }
 }
 
-//===----------------------------------------------------------------------===//
-// Main driver code.
-//===----------------------------------------------------------------------===//
-
-auto main() -> int
+void SetPrecedence()
 {
   // Install standard binary operators.
   // 1 is lowest precedence.
@@ -108,6 +113,21 @@ auto main() -> int
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
   BinopPrecedence['*'] = 40; // highest.
+}
+
+//===----------------------------------------------------------------------===//
+// Main driver code.
+//===----------------------------------------------------------------------===//
+
+auto main(int argc, char* argv[]) -> int
+{
+
+  if (!gooArgs.parse(argc, argv))
+  {
+    return 1;
+  }
+
+  SetPrecedence();
 
   // Prime the first token.
   getNextToken();
@@ -116,6 +136,15 @@ auto main() -> int
 
   // Run the main "interpreter loop" now.
   MainLoop();
+
+  fprintf(stderr, "%s%s%s: \n", COLOR_BOLD, gooArgs.inputFile.c_str(), COLOR_RESET);
+
+  if (!foundMain)
+  {
+    PRINT_ERROR("Missing required 'main' function entry point.");
+    PRINT_HINT("Define a top-level function: fn main() -> void");
+    return 1;
+  }
 
   // Initialize the target registry etc.
   InitializeAllTargetInfos();
