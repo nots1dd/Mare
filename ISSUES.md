@@ -1,10 +1,37 @@
 # Here are some known issues with this compiler:
 
-1. Binary ops does not understand strings:
+1. Type promotion
+2. When calling a function, evaluate the callee's prototype and the argument being passed:
 
-```text 
-Strings are handled in this compiler in such a way that you DO NOT have to call a print function! 
-The codegen for StringExpr automatically links the external library `printf` that does the job.
+Take the example of:
 
-I did it in this way coz its pretty cool, and does not break or interfere with externs and spares the job of adding another token.
+```mare
+extern __mare_sqrtd(double a) -> void;
+
+# Square root (sqrt)
+fn unary?(v) -> double
+{
+  ret __mare_sqrtd(v);
+}
+
+# here the arg is double by default
+fn custom(x) -> void
+{
+  var n = ?x;
+  __mare_printstr("\n----------------\n");
+  __mare_printd(n);
+  __mare_printstr("----------------\n");
+}
+
+fn retint(i16 a) -> i16
+{
+  ret a*a;
+}
+
+# by default the return type of this is void.
+fn problemFunction()
+{
+  var x = retint(12); # this is now of type i16
+  custom(x); # !!! Type escalation problem !!! (x is of i16 but being passed as a double)
+}
 ```

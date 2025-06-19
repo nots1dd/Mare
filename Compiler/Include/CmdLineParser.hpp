@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Colors.h"
+#include "Compiler.hpp"
+#include "Config.hpp"
+#include "Utils.hpp"
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -23,25 +25,49 @@ void printInfo(const std::string& msg)
   std::cout << COLOR_GREEN << "info:  " << COLOR_RESET << msg << "\n";
 }
 
-// --- Usage Help ---
-void printUsage()
-{
-  std::cout << COLOR_BOLD << "Usage: " << COLOR_RESET << "goo [options] <file.goo>\n\n"
-            << "Options:\n"
-            << "  -o <file>          Set output binary filename (default: a.out)\n"
-            << "  --output=<file>    Same as -o\n"
-            << "  --linker=<path>    Path to linker executable (default: /usr/bin/clang++)\n"
-            << "  -h, --help         Show this help message\n";
-}
-
 // --- Argument Parser ---
 struct ArgParser
 {
-  std::string   inputFile;
-  std::string   inputPath  = std::filesystem::current_path();
-  std::string   linkerPath = "/usr/bin/clang++";
-  std::string   outputFile = "a.out";
+  FileContent__ inputFile;
+  StdFilePath__ inputPath  = std::filesystem::current_path();
+  FilePath__    linkerPath = "/usr/bin/clang++";
+  FilePath__    outputFile = "a.out";
   std::ifstream inputFileStream;
+
+  void printUsage()
+  {
+    std::cout << COLOR_BOLD << COLOR_YELLOW
+              << "\n╭─────────────── Mare Compiler Help ───────────────╮\n"
+              << "│  Version  : " << COLOR_RESET << __MARE_VERSION__ << COLOR_BOLD << COLOR_YELLOW
+              << "\n"
+              << "│  Commit   : " << COLOR_RESET << __MARE_COMMIT_HASH__ << COLOR_BOLD
+              << COLOR_YELLOW << "\n"
+              << "│  Target   : " << COLOR_RESET << __MARE_TARGET_ARCH__ << COLOR_BOLD
+              << COLOR_YELLOW << "\n"
+              << "│  Triple   : " << COLOR_RESET << __MARE_LLVM_TRIPLE__ << COLOR_BOLD
+              << COLOR_YELLOW << "\n"
+              << "│  Build    : " << COLOR_RESET << __MARE_BUILD_TYPE__ << COLOR_BOLD
+              << COLOR_YELLOW << "\n"
+              << "╰──────────────────────────────────────────────────╯\n"
+              << COLOR_RESET;
+
+    std::cout << COLOR_BOLD << "\nUsage:\n"
+              << COLOR_RESET << "  " << COLOR_CYAN << "mare" << COLOR_RESET << " [options] <file"
+              << __MARE_FILE_EXTENSION_STEM__ << ">\n";
+
+    std::cout << COLOR_BOLD << "\nOptions:\n"
+              << COLOR_RESET << "  " << COLOR_GREEN << "-o <file>" << COLOR_RESET
+              << "           Set output binary filename (default: a.out)\n"
+              << "  " << COLOR_GREEN << "--output=<file>" << COLOR_RESET << "    Same as -o\n"
+              << "  " << COLOR_GREEN << "--linker=<path>" << COLOR_RESET
+              << "    Path to linker (default: /usr/bin/clang++)\n"
+              << "  " << COLOR_GREEN << "-h, --help" << COLOR_RESET
+              << "         Show this help message\n";
+
+    std::cout << COLOR_BOLD << "\nExample:\n"
+              << COLOR_RESET << "  mare -o myprog main" << __MARE_FILE_EXTENSION_STEM__ << "\n"
+              << std::endl;
+  }
 
   auto parse(int argc, char* argv[]) -> bool
   {
@@ -54,7 +80,7 @@ struct ArgParser
 
     for (int i = 1; i < argc; ++i)
     {
-      std::string arg = argv[i];
+      CmdLineArgs__ arg = argv[i];
 
       if (arg == "-h" || arg == "--help")
       {
@@ -73,9 +99,9 @@ struct ArgParser
       {
         outputFile = arg.substr(9);
       }
-      else if (arg.ends_with(".goo"))
+      else if (!arg.starts_with("-") && inputFile.empty())
       {
-        inputFile = arg;
+        inputFile = arg; // Tentatively accept as source file
       }
       else
       {
@@ -87,14 +113,16 @@ struct ArgParser
 
     if (inputFile.empty())
     {
-      printError("no `.goo` source file specified.");
+      printError("no input `.mare` source file provided.");
       return false;
     }
 
-    std::filesystem::path fullPath = inputFile;
-    if (fullPath.extension() != ".goo")
+    StdFilePath__ fullPath = inputFile;
+
+    if (fullPath.extension() != __MARE_FILE_EXTENSION_STEM__)
     {
-      printError("expected a `.goo` file, got: " + fullPath.filename().string());
+      printError("invalid source file extension: " + fullPath.filename().string());
+      printHint("Expected a file ending with: " + std::string(__MARE_FILE_EXTENSION_STEM__));
       return false;
     }
 
@@ -107,15 +135,6 @@ struct ArgParser
 
     return true;
   }
-
-  void printSummary()
-  {
-    std::cout << COLOR_BOLD << "Compiler Configuration:\n"
-              << COLOR_RESET << "  Source File : " << inputFile << "\n"
-              << "  Output File : " << outputFile << "\n"
-              << "  Linker Path : " << linkerPath << "\n"
-              << std::endl;
-  }
 };
 
-static ArgParser gooArgs;
+static ArgParser mareArgs;

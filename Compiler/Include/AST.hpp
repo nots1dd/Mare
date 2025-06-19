@@ -8,56 +8,60 @@
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------------------------------------===//
 
-namespace GooAST
+namespace Mare
 {
 
-/// ExprAST - Base class for all expression nodes.
-class ExprAST
+using ValueVariant = std::variant<int8_t, int16_t, int32_t, int64_t, float, double>;
+
+/// Expr - Base class for all expression nodes.
+class Expr
 {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~Expr() = default;
 
   virtual auto codegen() -> Value* = 0;
 };
 
-class BlockExprAST : public ExprAST
+class BlockExpr : public Expr
 {
-  std::vector<std::unique_ptr<ExprAST>> Expressions;
+  std::vector<std::unique_ptr<Expr>> Expressions;
 
 public:
-  BlockExprAST(std::vector<std::unique_ptr<ExprAST>> Exprs) : Expressions(std::move(Exprs)) {}
+  BlockExpr(std::vector<std::unique_ptr<Expr>> Exprs) : Expressions(std::move(Exprs)) {}
 
   auto codegen() -> llvm::Value* override;
 };
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
-class NumberExprAST : public ExprAST
+/// NumberExpr - Expression class for numeric literals like "1.0".
+class NumberExpr : public Expr
 {
-  double Val;
+private:
+  ValueVariant Val;
+  llvm::Type*  ValType; // Set during parsing based on token
 
 public:
-  NumberExprAST(double Val) : Val(Val) {}
+  NumberExpr(ValueVariant Val, llvm::Type* Type) : Val(std::move(Val)), ValType(Type) {}
 
-  auto codegen() -> Value* override;
+  auto codegen() -> llvm::Value* override;
 };
 
-class StringExprAST : public ExprAST
+class StringExpr : public Expr
 {
   std::string Val;
 
 public:
-  StringExprAST(std::string Val) : Val(std::move(Val)) {}
+  StringExpr(std::string Val) : Val(std::move(Val)) {}
 
   auto codegen() -> llvm::Value* override;
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST
+/// VariableExpr - Expression class for referencing a variable, like "a".
+class VariableExpr : public Expr
 {
   std::string Name;
   Type*       VarType; // Store the type
 public:
-  VariableExprAST(std::string Name, Type* type = nullptr) : Name(std::move(Name)), VarType(type) {}
+  VariableExpr(std::string Name, Type* type = nullptr) : Name(std::move(Name)), VarType(type) {}
 
   auto               codegen() -> Value* override;
   [[nodiscard]] auto getName() const -> const std::string& { return Name; }
@@ -65,14 +69,14 @@ public:
   [[nodiscard]] auto getType() const -> Type* { return VarType; }
 };
 
-/// UnaryExprAST - Expression class for a unary operator.
-class UnaryExprAST : public ExprAST
+/// UnaryExpr - Expression class for a unary operator.
+class UnaryExpr : public Expr
 {
-  char                     Opcode;
-  std::unique_ptr<ExprAST> Operand;
+  char                  Opcode;
+  std::unique_ptr<Expr> Operand;
 
 public:
-  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
+  UnaryExpr(char Opcode, std::unique_ptr<Expr> Operand)
       : Opcode(Opcode), Operand(std::move(Operand))
   {
   }
@@ -80,14 +84,14 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// BinaryExprAST - Expression class for a binary operator.
-class BinaryExprAST : public ExprAST
+/// BinaryExpr - Expression class for a binary operator.
+class BinaryExpr : public Expr
 {
-  char                     Op;
-  std::unique_ptr<ExprAST> LHS, RHS;
+  char                  Op;
+  std::unique_ptr<Expr> LHS, RHS;
 
 public:
-  BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS, std::unique_ptr<ExprAST> RHS)
+  BinaryExpr(char Op, std::unique_ptr<Expr> LHS, std::unique_ptr<Expr> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS))
   {
   }
@@ -95,14 +99,14 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// CallExprAST - Expression class for function calls.
-class CallExprAST : public ExprAST
+/// CallExpr - Expression class for function calls.
+class CallExpr : public Expr
 {
-  std::string                           Callee;
-  std::vector<std::unique_ptr<ExprAST>> Args;
+  std::string                        Callee;
+  std::vector<std::unique_ptr<Expr>> Args;
 
 public:
-  CallExprAST(std::string Callee, std::vector<std::unique_ptr<ExprAST>> Args)
+  CallExpr(std::string Callee, std::vector<std::unique_ptr<Expr>> Args)
       : Callee(std::move(Callee)), Args(std::move(Args))
   {
   }
@@ -110,14 +114,13 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// IfExprAST - Expression class for if/then/else.
-class IfExprAST : public ExprAST
+/// IfExpr - Expression class for if/then/else.
+class IfExpr : public Expr
 {
-  std::unique_ptr<ExprAST> Cond, Then, Else;
+  std::unique_ptr<Expr> Cond, Then, Else;
 
 public:
-  IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
-            std::unique_ptr<ExprAST> Else)
+  IfExpr(std::unique_ptr<Expr> Cond, std::unique_ptr<Expr> Then, std::unique_ptr<Expr> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else))
   {
   }
@@ -125,15 +128,15 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST
+/// ForExpr - Expression class for for/in.
+class ForExpr : public Expr
 {
-  std::string              VarName;
-  std::unique_ptr<ExprAST> Start, End, Step, Body;
+  std::string           VarName;
+  std::unique_ptr<Expr> Start, End, Step, Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start, std::unique_ptr<ExprAST> End,
-             std::unique_ptr<ExprAST> Step, std::unique_ptr<ExprAST> Body)
+  ForExpr(std::string VarName, std::unique_ptr<Expr> Start, std::unique_ptr<Expr> End,
+          std::unique_ptr<Expr> Step, std::unique_ptr<Expr> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)), End(std::move(End)),
         Step(std::move(Step)), Body(std::move(Body))
   {
@@ -142,14 +145,14 @@ public:
   auto codegen() -> Value* override;
 };
 
-/// VarExprAST - Expression class for var keyword
-class VarExprAST : public ExprAST
+/// VarExpr - Expression class for var keyword
+class VarExpr : public Expr
 {
-  std::string              VarName;
-  std::unique_ptr<ExprAST> Init;
+  std::string           VarName;
+  std::unique_ptr<Expr> Init;
 
 public:
-  VarExprAST(std::string name, std::unique_ptr<ExprAST> init)
+  VarExpr(std::string name, std::unique_ptr<Expr> init)
       : VarName(std::move(name)), Init(std::move(init))
   {
   }
@@ -157,12 +160,12 @@ public:
   auto codegen() -> llvm::Value* override;
 };
 
-class ReturnExprAST : public ExprAST
+class ReturnExpr : public Expr
 {
-  std::unique_ptr<ExprAST> Expr;
+  std::unique_ptr<Expr> Exp;
 
 public:
-  ReturnExprAST(std::unique_ptr<ExprAST> Expr) : Expr(std::move(Expr)) {}
+  ReturnExpr(std::unique_ptr<Expr> Exp) : Exp(std::move(Exp)) {}
 
   auto codegen() -> llvm::Value* override;
 };
@@ -170,7 +173,7 @@ public:
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes), as well as if it is an operator.
-class PrototypeAST
+class Prototype
 {
   std::string              Name;
   std::vector<std::string> Args;
@@ -180,8 +183,8 @@ class PrototypeAST
   llvm::Type*              RetType;
 
 public:
-  PrototypeAST(std::string Name, std::vector<std::string> Args, std::vector<llvm::Type*> ArgTypes,
-               llvm::Type* RetType, bool IsOperator = false, unsigned Prec = 0)
+  Prototype(std::string Name, std::vector<std::string> Args, std::vector<llvm::Type*> ArgTypes,
+            llvm::Type* RetType, bool IsOperator = false, unsigned Prec = 0)
       : Name(std::move(Name)), Args(std::move(Args)), ArgTypes(std::move(ArgTypes)),
         RetType(RetType), IsOperator(IsOperator), Precedence(Prec)
   {
@@ -211,13 +214,13 @@ public:
 };
 
 /// FunctionAST - This class represents a function definition itself.
-class FunctionAST
+class FunctionalAST
 {
-  std::unique_ptr<PrototypeAST> Proto;
-  std::unique_ptr<ExprAST>      Body;
+  std::unique_ptr<Prototype> Proto;
+  std::unique_ptr<Expr>      Body;
 
 public:
-  FunctionAST(std::unique_ptr<PrototypeAST> Proto, std::unique_ptr<ExprAST> Body)
+  FunctionalAST(std::unique_ptr<Prototype> Proto, std::unique_ptr<Expr> Body)
       : Proto(std::move(Proto)), Body(std::move(Body))
   {
   }
@@ -232,4 +235,4 @@ public:
   [[nodiscard]] auto getReturnType() const -> llvm::Type* { return Proto->getReturnType(); }
 };
 
-} // namespace GooAST
+} // namespace Mare

@@ -1,4 +1,6 @@
-# Goo
+# Mare
+
+## What is it?
 
 A learning dump + impl of a basic compiler using the LLVM project.
 

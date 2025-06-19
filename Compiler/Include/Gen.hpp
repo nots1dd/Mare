@@ -1,17 +1,12 @@
 #pragma once
 
-#include "AST.hpp"
-#include "Parser.hpp"
+#include "GenHelper.hpp"
+#include "PrimitiveTypes.hpp"
 
-using namespace GooAST;
-
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-
-inline auto LogErrorV(const char* Str) -> Value*
+namespace Mare
 {
-  LogError(Str);
-  return nullptr;
-}
+
+static std::map<std::string, std::unique_ptr<Prototype>> FunctionProtos;
 
 inline auto getFunction(std::string Name) -> llvm::Function*
 {
@@ -38,12 +33,37 @@ static auto CreateEntryBlockAlloca(llvm::Function* TheFunction, llvm::Type* Allo
   return TmpB.CreateAlloca(AllocType, nullptr, VarName);
 }
 
-inline auto NumberExprAST::codegen() -> Value*
+inline auto NumberExpr::codegen() -> llvm::Value*
 {
-  return ConstantFP::get(*TheContext, APFloat(Val));
+  if (std::holds_alternative<int64_t>(Val))
+  {
+    return llvm::ConstantInt::get(ValType, std::get<int64_t>(Val), /*isSigned=*/true);
+  }
+  else if (std::holds_alternative<int32_t>(Val))
+  {
+    return llvm::ConstantInt::get(ValType, std::get<int32_t>(Val), /*isSigned=*/true);
+  }
+  else if (std::holds_alternative<int16_t>(Val))
+  {
+    return llvm::ConstantInt::get(ValType, std::get<int16_t>(Val), /*isSigned=*/true);
+  }
+  else if (std::holds_alternative<int8_t>(Val))
+  {
+    return llvm::ConstantInt::get(ValType, std::get<int8_t>(Val), /*isSigned=*/true);
+  }
+  else if (std::holds_alternative<double>(Val))
+  {
+    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(std::get<double>(Val)));
+  }
+  else if (std::holds_alternative<float>(Val))
+  {
+    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(std::get<float>(Val)));
+  }
+
+  return nullptr; // Should never hit this if parsing is correct
 }
 
-inline auto VariableExprAST::codegen() -> Value*
+inline auto VariableExpr::codegen() -> Value*
 {
   // Look this variable up in the function.
   AllocaInst* V = NamedValues[Name];
@@ -55,7 +75,7 @@ inline auto VariableExprAST::codegen() -> Value*
   return Builder->CreateLoad(loadType, V, Name.c_str());
 }
 
-inline auto UnaryExprAST::codegen() -> Value*
+inline auto UnaryExpr::codegen() -> Value*
 {
   Value* OperandV = Operand->codegen();
   if (!OperandV)
@@ -68,12 +88,12 @@ inline auto UnaryExprAST::codegen() -> Value*
   return Builder->CreateCall(F, OperandV, "unop");
 }
 
-inline auto BinaryExprAST::codegen() -> llvm::Value*
+inline auto BinaryExpr::codegen() -> llvm::Value*
 {
-  // Handle assignment separately
+  // Handle assignment
   if (Op == '=')
   {
-    auto* LHSE = static_cast<VariableExprAST*>(LHS.get());
+    auto* LHSE = dynamic_cast<VariableExpr*>(LHS.get());
     if (!LHSE)
       return LogErrorV("destination of '=' must be a variable");
 
@@ -94,38 +114,87 @@ inline auto BinaryExprAST::codegen() -> llvm::Value*
   if (!L || !R)
     return nullptr;
 
-  // Standard Numeric Operations
+  llvm::Type* LT = L->getType();
+  llvm::Type* RT = R->getType();
+
+  // Promote operands to compatible types
+  if (LT != RT)
+  {
+    if (LT->isFloatingPointTy() && RT->isIntegerTy())
+    {
+      R  = Builder->CreateSIToFP(R, LT, "cast_rhs");
+      RT = LT;
+    }
+    else if (RT->isFloatingPointTy() && LT->isIntegerTy())
+    {
+      L  = Builder->CreateSIToFP(L, RT, "cast_lhs");
+      LT = RT;
+    }
+    else if (LT->isIntegerTy() && RT->isIntegerTy())
+    {
+      unsigned LBits = LT->getIntegerBitWidth();
+      unsigned RBits = RT->getIntegerBitWidth();
+      if (LBits > RBits)
+        R = Builder->CreateSExt(R, LT, "cast_rhs");
+      else if (RBits > LBits)
+        L = Builder->CreateSExt(L, RT, "cast_lhs");
+      // else same bits: nothing needed
+    }
+    else
+    {
+      llvm::errs() << "[codegen] Cannot reconcile types: ";
+      LT->print(llvm::errs());
+      llvm::errs() << " vs ";
+      RT->print(llvm::errs());
+      llvm::errs() << "\n";
+      return LogErrorV("Type mismatch in binary expression");
+    }
+  }
+
+  // Refresh common type
+  LT = L->getType();
+
   switch (Op)
   {
     case '+':
-      return Builder->CreateFAdd(L, R, "addtmp");
+      return LT->isFloatingPointTy() ? Builder->CreateFAdd(L, R, "addtmp")
+                                     : Builder->CreateAdd(L, R, "addtmp");
     case '-':
-      return Builder->CreateFSub(L, R, "subtmp");
+      return LT->isFloatingPointTy() ? Builder->CreateFSub(L, R, "subtmp")
+                                     : Builder->CreateSub(L, R, "subtmp");
     case '*':
-      return Builder->CreateFMul(L, R, "multmp");
+      return LT->isFloatingPointTy() ? Builder->CreateFMul(L, R, "multmp")
+                                     : Builder->CreateMul(L, R, "multmp");
+    case '/':
+      return LT->isFloatingPointTy() ? Builder->CreateFDiv(L, R, "divtmp")
+                                     : Builder->CreateSDiv(L, R, "divtmp");
     case '<':
-    {
-      L = Builder->CreateFCmpULT(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext), "booltmp");
-    }
+      return LT->isFloatingPointTy() ? Builder->CreateFCmpULT(L, R, "lt")
+                                     : Builder->CreateICmpSLT(L, R, "lt");
+    case '>':
+      return LT->isFloatingPointTy() ? Builder->CreateFCmpUGT(L, R, "gt")
+                                     : Builder->CreateICmpSGT(L, R, "gt");
     default:
       break;
   }
 
-  // Handle user-defined operators
-  llvm::Function* F = getFunction(std::string("binary") + Op);
-  assert(F && "binary operator not found!");
+  // User-defined operator fallback
+  std::string FnName = "binary";
+  FnName += Op;
+  if (llvm::Function* F = getFunction(FnName))
+    return Builder->CreateCall(F, {L, R}, "binop");
 
-  llvm::Value* Ops[] = {L, R};
-  return Builder->CreateCall(F, Ops, "binop");
+  llvm::errs() << "[codegen] Unknown binary operator '" << Op << "'\n";
+  return LogErrorV("Unknown binary operator");
 }
 
-inline auto CallExprAST::codegen() -> Value*
+inline auto CallExpr::codegen() -> Value*
 {
   // Look up the name in the global module table.
-  llvm::Function* CalleeF = getFunction(Callee);
+  llvm::Function*   CalleeF = getFunction(Callee);
+  const std::string errMsg  = "Unknown function referenced: " + Callee;
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorV(errMsg.c_str());
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
@@ -148,7 +217,7 @@ inline auto CallExprAST::codegen() -> Value*
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-inline auto StringExprAST::codegen() -> llvm::Value*
+inline auto StringExpr::codegen() -> llvm::Value*
 {
   // Create a global string constant
   llvm::Value* Str = llvm::ConstantDataArray::getString(*TheContext, Val, true);
@@ -157,21 +226,44 @@ inline auto StringExprAST::codegen() -> llvm::Value*
                              llvm::cast<llvm::Constant>(Str), ".str");
 
   // Generate GEP to get pointer to the string data
-  llvm::Value* Zero      = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*TheContext), 0);
+  llvm::Value* Zero      = llvm::ConstantInt::get(MARE_INT32_TYPE, 0);
   llvm::Value* StringPtr = Builder->CreateGEP(GV->getValueType(), GV, {Zero, Zero}, "strptr");
 
   // Return the string pointer directly
   return StringPtr;
 }
 
-inline auto IfExprAST::codegen() -> Value*
+inline auto IfExpr::codegen() -> Value*
 {
   Value* CondV = Cond->codegen();
   if (!CondV)
     return nullptr;
 
-  // Convert condition to a bool by comparing non-equal to 0.0.
-  CondV = Builder->CreateFCmpONE(CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+  // Convert condition to a bool by comparing to zero
+  // Handle different types for the condition
+  Value* ZeroValue = nullptr;
+  Type*  CondType  = CondV->getType();
+
+  if (CondType->isIntegerTy())
+  {
+    ZeroValue = ConstantInt::get(CondType, 0);
+    CondV     = Builder->CreateICmpNE(CondV, ZeroValue, "ifcond");
+  }
+  else if (CondType->isFloatTy())
+  {
+    ZeroValue = ConstantFP::get(CondType, 0.0f);
+    CondV     = Builder->CreateFCmpONE(CondV, ZeroValue, "ifcond");
+  }
+  else if (CondType->isDoubleTy())
+  {
+    ZeroValue = ConstantFP::get(CondType, 0.0);
+    CondV     = Builder->CreateFCmpONE(CondV, ZeroValue, "ifcond");
+  }
+  else
+  {
+    LogErrorV("Unsupported condition type in 'if' expression");
+    return nullptr;
+  }
 
   llvm::Function* TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -185,11 +277,9 @@ inline auto IfExprAST::codegen() -> Value*
 
   // Emit then value.
   Builder->SetInsertPoint(ThenBB);
-
   Value* ThenV = Then->codegen();
   if (!ThenV)
     return nullptr;
-
   Builder->CreateBr(MergeBB);
   // Codegen of 'Then' can change the current block, update ThenBB for the PHI.
   ThenBB = Builder->GetInsertBlock();
@@ -197,11 +287,9 @@ inline auto IfExprAST::codegen() -> Value*
   // Emit else block.
   TheFunction->insert(TheFunction->end(), ElseBB);
   Builder->SetInsertPoint(ElseBB);
-
   Value* ElseV = Else->codegen();
   if (!ElseV)
     return nullptr;
-
   Builder->CreateBr(MergeBB);
   // Codegen of 'Else' can change the current block, update ElseBB for the PHI.
   ElseBB = Builder->GetInsertBlock();
@@ -210,15 +298,49 @@ inline auto IfExprAST::codegen() -> Value*
   TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
 
-  Type* ResultType = ThenV->getType();
-  if (ResultType != ElseV->getType())
+  Type* ThenType = ThenV->getType();
+  Type* ElseType = ElseV->getType();
+
+  // Handle type promotion/conversion for different ValueVariant types
+  if (ThenType != ElseType)
   {
-    LogErrorV("Mismatched types in 'if' expression");
-    return nullptr;
+    // Try to find a common type and promote both values
+    Type* CommonType = getCommonType(ThenType, ElseType);
+    if (!CommonType)
+    {
+      LogErrorV("Cannot find common type for 'if' expression branches");
+      return nullptr;
+    }
+
+    // Promote ThenV to common type if needed
+    if (ThenType != CommonType)
+    {
+      ThenV = promoteValue(ThenV, ThenType, CommonType);
+      if (!ThenV)
+      {
+        LogErrorV("Failed to promote 'then' branch value");
+        return nullptr;
+      }
+    }
+
+    // Promote ElseV to common type if needed
+    if (ElseType != CommonType)
+    {
+      ElseV = promoteValue(ElseV, ElseType, CommonType);
+      if (!ElseV)
+      {
+        LogErrorV("Failed to promote 'else' branch value");
+        return nullptr;
+      }
+    }
+
+    ThenType = CommonType;
   }
 
-  PHINode* PN = Builder->CreatePHI(ResultType, 2, "iftmp");
+  llvm::errs() << "\n>>> Creating PHI with types: " << *ThenV->getType() << " and "
+               << *ElseV->getType() << "\n";
 
+  PHINode* PN = Builder->CreatePHI(ThenType, 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
   return PN;
@@ -243,7 +365,7 @@ inline auto IfExprAST::codegen() -> Value*
 //   store nextvar -> var
 //   br endcond, loop, endloop
 // outloop:
-inline auto ForExprAST::codegen() -> Value*
+inline auto ForExpr::codegen() -> Value*
 {
   llvm::Function* TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -363,7 +485,7 @@ inline auto ForExprAST::codegen() -> Value*
   return Constant::getNullValue(LoopVarType);
 }
 
-inline auto VarExprAST::codegen() -> llvm::Value*
+inline auto VarExpr::codegen() -> llvm::Value*
 {
   llvm::Function* TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -397,7 +519,7 @@ inline auto VarExprAST::codegen() -> llvm::Value*
   return InitVal;
 }
 
-inline auto PrototypeAST::codegen() -> llvm::Function*
+inline auto Prototype::codegen() -> llvm::Function*
 {
   // Make the function type: RetType(ArgType, ArgType, ...) etc.
   FunctionType* FT = FunctionType::get(RetType, ArgTypes, false); // Use stored return type
@@ -413,7 +535,7 @@ inline auto PrototypeAST::codegen() -> llvm::Function*
   return F;
 }
 
-inline auto FunctionAST::codegen() -> llvm::Function*
+inline auto FunctionalAST::codegen() -> llvm::Function*
 {
   // Transfer ownership of the prototype to the FunctionProtos map.
   auto& P = *Proto;
@@ -425,7 +547,7 @@ inline auto FunctionAST::codegen() -> llvm::Function*
 
   // If this is an operator, install it.
   if (P.isBinaryOp())
-    BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
+    Mare::Parser::BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
 
   // Create a new basic block to start insertion into.
   BasicBlock* BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
@@ -448,10 +570,13 @@ inline auto FunctionAST::codegen() -> llvm::Function*
   if (Value* RetVal = Body->codegen())
   {
     // If function return type is void, we do not return a value.
-    if (P.getReturnType()->isVoidTy())
-      Builder->CreateRetVoid();
-    else
-      Builder->CreateRet(RetVal);
+    if (!Builder->GetInsertBlock()->getTerminator())
+    {
+      if (P.getReturnType()->isVoidTy())
+        Builder->CreateRetVoid();
+      else
+        Builder->CreateRet(RetVal);
+    }
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
@@ -463,11 +588,11 @@ inline auto FunctionAST::codegen() -> llvm::Function*
   TheFunction->eraseFromParent();
 
   if (P.isBinaryOp())
-    BinopPrecedence.erase(P.getOperatorName());
+    Mare::Parser::BinopPrecedence.erase(P.getOperatorName());
   return nullptr;
 }
 
-inline auto BlockExprAST::codegen() -> llvm::Value*
+inline auto BlockExpr::codegen() -> llvm::Value*
 {
   llvm::Value* Last = nullptr;
 
@@ -486,11 +611,11 @@ inline auto BlockExprAST::codegen() -> llvm::Value*
   return Last;
 }
 
-auto ReturnExprAST::codegen() -> llvm::Value*
+auto ReturnExpr::codegen() -> llvm::Value*
 {
-  if (Expr)
+  if (Exp)
   {
-    llvm::Value* RetVal = Expr->codegen();
+    llvm::Value* RetVal = Exp->codegen();
     if (!RetVal)
       return nullptr;
 
@@ -500,3 +625,5 @@ auto ReturnExprAST::codegen() -> llvm::Value*
   // For void return
   return Builder->CreateRetVoid();
 }
+
+} // namespace Mare

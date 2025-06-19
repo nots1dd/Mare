@@ -1,0 +1,7 @@
+#pragma once
+
+#define __MARE_VERSION__ "@__MARE_VERSION__@"
+#define __MARE_COMMIT_HASH__ "@__MARE_COMMIT_HASH__@"
+#define __MARE_TARGET_ARCH__ "@__MARE_TARGET_ARCH__@"
+#define __MARE_LLVM_TRIPLE__ "@__MARE_LLVM_TRIPLE__@"
+#define __MARE_BUILD_TYPE__ "@__MARE_BUILD_TYPE__@"

@@ -84,7 +84,6 @@ static void HandleExtern()
     {
       fprintf(stderr, "Read extern: ");
       FnIR->print(errs());
-      fprintf(stderr, "\n");
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   }

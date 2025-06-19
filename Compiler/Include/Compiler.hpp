@@ -20,25 +20,34 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/TargetParser/Host.h"
 #include <cassert>
-#include <cctype>
-#include <cstdio>
-#include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
-#include <system_error>
-#include <utility>
-#include <vector>
 
-#define __GOO_OBJECT_FILE_NAME__    "GooOutput.o"
-#define __GOO_ASM_FILE_NAME__       "GooOutput.asm"
-#define __GOO_CPU_STANDARD__        "generic"
-#define __GOO_FILE_EXTENSION_STEM__ ".goo"
+#define __MARE_OBJECT_FILE_NAME__    "MareCompilerOutput.o"
+#define __MARE_ASM_FILE_NAME__       "MareCompilerOutput.asm"
+#define __MARE_CPU_STANDARD__        "generic"
+#define __MARE_FILE_EXTENSION_STEM__ ".mare"
 
-#define NEWLINE_CHAR '\n'
+//===----------------------------------------------------------------------===//
+// Escape Sequences (useful for parser)
+//===----------------------------------------------------------------------===//
+
+#define ESCAPE_SEQUENCE_NEWLINE       '\n' // Line Feed (LF)
+#define ESCAPE_SEQUENCE_CARRIAGE_RET  '\r' // Carriage Return (CR)
+#define ESCAPE_SEQUENCE_TAB           '\t' // Horizontal Tab
+#define ESCAPE_SEQUENCE_VERTICAL_TAB  '\v' // Vertical Tab
+#define ESCAPE_SEQUENCE_BACKSPACE     '\b' // Backspace
+#define ESCAPE_SEQUENCE_FORMFEED      '\f' // Form feed (new page)
+#define ESCAPE_SEQUENCE_ALERT         '\a' // Bell / Alert
+#define ESCAPE_SEQUENCE_BACKSLASH     '\\' // Backslash
+#define ESCAPE_SEQUENCE_SINGLE_QUOTE  '\''
+#define ESCAPE_SEQUENCE_DOUBLE_QUOTE  '\"'
+#define ESCAPE_SEQUENCE_QUESTION_MARK '\?' // Literal question mark (avoids trigraphs)
+
+// Optional: macro for null terminator
+#define ESCAPE_SEQUENCE_NULL '\0'
 
 using namespace llvm;
 using namespace llvm::sys;
@@ -68,11 +77,13 @@ static ExitOnError                                   ExitOnErr;
 // of these for known things.
 enum Token
 {
-  tok_eof = -1,
+  tok_error = 0,
+  tok_eof   = -1,
 
   // commands
   tok_def    = -2,
   tok_extern = -3,
+  tok_fetch  = -24,
 
   // primary
   tok_identifier = -4,
@@ -95,5 +106,10 @@ enum Token
   tok_string = -15,
   tok_void   = -16,
   tok_double = -17,
-  tok_arrow  = -18
+  tok_float  = -18,
+  tok_int8   = -19,
+  tok_int16  = -20,
+  tok_int32  = -21,
+  tok_int64  = -22,
+  tok_arrow  = -23
 };

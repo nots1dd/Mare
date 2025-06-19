@@ -1,13 +1,14 @@
-#include "Include/CmdLineParser.hpp"
 #include "Include/Colors.h"
 #include "Include/Compiler.hpp"
 #include "Include/Gen.hpp"
 #include "Include/Parser.hpp"
+#include "Include/PrimitiveTypes.hpp"
 #include <iostream>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Program.h> // for ExecuteAndWait
+#include <llvm/TargetParser/Host.h>
 
-using namespace GooAST;
+using namespace Mare;
 
 static bool foundMain = false;
 
@@ -19,7 +20,7 @@ static void InitializeModuleAndPassManager()
 {
   // Open a new module.
   TheContext = std::make_unique<LLVMContext>();
-  TheModule  = std::make_unique<Module>("Goo", *TheContext);
+  TheModule  = std::make_unique<Module>("Mare", *TheContext);
 
   // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
@@ -27,9 +28,9 @@ static void InitializeModuleAndPassManager()
 
 static void HandleDefinition()
 {
-  if (auto FnAST = ParseDefinition())
+  if (auto FnAST = Parser::ParseDefinition())
   {
-    if (FnAST->getName() == "main" && FnAST->getReturnType() == llvm::Type::getVoidTy(*TheContext))
+    if (FnAST->getName() == "main" && FnAST->getReturnType() == MARE_VOID_TYPE)
     {
       foundMain = true;
     }
@@ -43,40 +44,39 @@ static void HandleDefinition()
   else
   {
     // Skip token for error recovery.
-    getNextToken();
+    Tokenizer::getNextToken();
   }
 }
 
 static void HandleExtern()
 {
-  if (auto ProtoAST = ParseExtern())
+  if (auto ProtoAST = Parser::ParseExtern())
   {
     if (auto* FnIR = ProtoAST->codegen())
     {
       fprintf(stderr, "Read extern: ");
       FnIR->print(errs());
-      fprintf(stderr, "\n");
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   }
   else
   {
     // Skip token for error recovery.
-    getNextToken();
+    Tokenizer::getNextToken();
   }
 }
 
 static void HandleTopLevelExpression()
 {
   // Evaluate a top-level expression into an anonymous function.
-  if (auto FnAST = ParseTopLevelExpr())
+  if (auto FnAST = Parser::ParseTopLevelExpr())
   {
     FnAST->codegen();
   }
   else
   {
     // Skip token for error recovery.
-    getNextToken();
+    Tokenizer::getNextToken();
   }
 }
 
@@ -85,12 +85,12 @@ static void MainLoop()
 {
   while (true)
   {
-    switch (CurTok)
+    switch (Tokenizer::CurTok)
     {
       case tok_eof:
         return;
       case ';': // ignore top-level semicolons.
-        getNextToken();
+        Tokenizer::getNextToken();
         break;
       case tok_def:
         HandleDefinition();
@@ -109,10 +109,58 @@ void SetPrecedence()
 {
   // Install standard binary operators.
   // 1 is lowest precedence.
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40; // highest.
+  Parser::BinopPrecedence['<'] = 10;
+  Parser::BinopPrecedence['>'] = 10;
+  Parser::BinopPrecedence['+'] = 20;
+  Parser::BinopPrecedence['-'] = 20;
+  Parser::BinopPrecedence['*'] = 40; // highest.
+  Parser::BinopPrecedence['/'] = 50;
+}
+
+inline auto CreateHostTargetMachine() -> llvm::TargetMachine*
+{
+  // Initialize all targets (safe to call multiple times)
+  llvm::InitializeAllTargetInfos();
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmParsers();
+  llvm::InitializeAllAsmPrinters();
+
+  // Get host target triple
+  std::string targetTriple = llvm::sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(targetTriple);
+
+  std::cout << "[*] Detected target triple: " << targetTriple << "\n";
+
+  // Lookup the target
+  std::string         error;
+  const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
+  if (!target)
+  {
+    llvm::errs() << "[!] Failed to lookup target: " << error << "\n";
+    return nullptr;
+  }
+
+  // Get host CPU and feature set
+  std::string cpu = llvm::sys::getHostCPUName().str();
+
+  if (cpu.empty())
+    cpu = __MARE_CPU_STANDARD__; // fallback to generic
+
+  std::cout << "[*] Host CPU: " << cpu << "\n";
+  llvm::TargetOptions  opt;
+  llvm::TargetMachine* targetMachine =
+    target->createTargetMachine(targetTriple, cpu, "", opt, Reloc::PIC_);
+
+  if (!targetMachine)
+  {
+    llvm::errs() << "[!] Failed to create TargetMachine for triple: " << targetTriple << "\n";
+    return nullptr;
+  }
+
+  TheModule->setDataLayout(targetMachine->createDataLayout());
+
+  return targetMachine;
 }
 
 //===----------------------------------------------------------------------===//
@@ -122,7 +170,7 @@ void SetPrecedence()
 auto main(int argc, char* argv[]) -> int
 {
 
-  if (!gooArgs.parse(argc, argv))
+  if (!mareArgs.parse(argc, argv))
   {
     return 1;
   }
@@ -130,14 +178,15 @@ auto main(int argc, char* argv[]) -> int
   SetPrecedence();
 
   // Prime the first token.
-  getNextToken();
+  Tokenizer::getNextToken();
 
   InitializeModuleAndPassManager();
 
   // Run the main "interpreter loop" now.
   MainLoop();
 
-  fprintf(stderr, "%s%s%s: \n", COLOR_BOLD, gooArgs.inputFile.c_str(), COLOR_RESET);
+  fprintf(stderr, "%s%s%s%s: \n", COLOR_BOLD, COLOR_UNDERL, mareArgs.inputFile.c_str(),
+          COLOR_RESET);
 
   if (!foundMain)
   {
@@ -146,38 +195,10 @@ auto main(int argc, char* argv[]) -> int
     return 1;
   }
 
-  // Initialize the target registry etc.
-  InitializeAllTargetInfos();
-  InitializeAllTargets();
-  InitializeAllTargetMCs();
-  InitializeAllAsmParsers();
-  InitializeAllAsmPrinters();
-
-  auto TargetTriple = sys::getDefaultTargetTriple();
-  TheModule->setTargetTriple(TargetTriple);
-
-  std::string Error;
-  auto        Target = TargetRegistry::lookupTarget(TargetTriple, Error);
-
-  // Print an error and exit if we couldn't find the requested target.
-  // This generally occurs if we've forgotten to initialise the
-  // TargetRegistry or we have a bogus target triple.
-  if (!Target)
-  {
-    errs() << Error;
-    return 1;
-  }
-
-  auto Features = "";
-
-  TargetOptions opt;
-  auto          TheTargetMachine =
-    Target->createTargetMachine(TargetTriple, __GOO_CPU_STANDARD__, Features, opt, Reloc::PIC_);
-
-  TheModule->setDataLayout(TheTargetMachine->createDataLayout());
+  auto TargetMachine = CreateHostTargetMachine();
 
   std::error_code EC;
-  raw_fd_ostream  dest(__GOO_OBJECT_FILE_NAME__, EC, sys::fs::OF_None);
+  raw_fd_ostream  dest(__MARE_OBJECT_FILE_NAME__, EC, sys::fs::OF_None);
 
   if (EC)
   {
@@ -188,7 +209,7 @@ auto main(int argc, char* argv[]) -> int
   legacy::PassManager pass;
   auto                FileType = CodeGenFileType::ObjectFile;
 
-  if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType))
+  if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType))
   {
     errs() << "TheTargetMachine can't emit a file of this type";
     return 1;
@@ -198,7 +219,7 @@ auto main(int argc, char* argv[]) -> int
   dest.flush();
 
   outs() << COLOR_UNDERL << COLOR_BOLD << COLOR_GREEN
-         << "-- Compiled to Object File: " << __GOO_OBJECT_FILE_NAME__ << "\n"
+         << "-- Compiled to Object File: " << __MARE_OBJECT_FILE_NAME__ << "\n"
          << COLOR_RESET;
 
   return 0;

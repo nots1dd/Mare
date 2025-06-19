@@ -2,9 +2,9 @@ GCC := gcc
 
 INCLUDE_DIR := -I build/Runtime -L build/Runtime
 
-LINK_STD_M := -l goostdm
+LINK_STD_M := -l mare-std-m
 
-OBJ_FILE := GooOutput.o 
+OBJ_FILE := MareCompilerOutput.o 
 
 FINAL_BIN := OutputBin
 
