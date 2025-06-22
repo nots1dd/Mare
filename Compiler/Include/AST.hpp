@@ -1,8 +1,8 @@
 #pragma once
 
-#include <utility>
-
 #include "Compiler.hpp"
+#include "Globals.hpp"
+#include <utility>
 
 //===----------------------------------------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
@@ -11,11 +11,10 @@
 namespace Mare
 {
 
-using ValueVariant = std::variant<int8_t, int16_t, int32_t, int64_t, float, double>;
-
 /// Expr - Base class for all expression nodes.
 class Expr
 {
+
 public:
   virtual ~Expr() = default;
 
@@ -36,11 +35,11 @@ public:
 class NumberExpr : public Expr
 {
 private:
-  ValueVariant Val;
-  llvm::Type*  ValType; // Set during parsing based on token
+  Global::ValueVariant Val;
+  llvm::Type*          ValType; // Set during parsing based on token
 
 public:
-  NumberExpr(ValueVariant Val, llvm::Type* Type) : Val(std::move(Val)), ValType(Type) {}
+  NumberExpr(Global::ValueVariant Val, llvm::Type* Type) : Val(std::move(Val)), ValType(Type) {}
 
   auto codegen() -> llvm::Value* override;
 };

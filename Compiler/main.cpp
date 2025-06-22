@@ -1,9 +1,11 @@
 #include "Include/Colors.h"
 #include "Include/Compiler.hpp"
 #include "Include/Gen.hpp"
+// #include "Include/Grab.hpp"
 #include "Include/Parser.hpp"
 #include "Include/PrimitiveTypes.hpp"
 #include <iostream>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Program.h> // for ExecuteAndWait
 #include <llvm/TargetParser/Host.h>
@@ -89,7 +91,7 @@ static void MainLoop()
     {
       case tok_eof:
         return;
-      case ';': // ignore top-level semicolons.
+      case STATEMENT_DELIM: // ignore top-level semicolons.
         Tokenizer::getNextToken();
         break;
       case tok_def:
@@ -119,20 +121,16 @@ void SetPrecedence()
 
 inline auto CreateHostTargetMachine() -> llvm::TargetMachine*
 {
-  // Initialize all targets (safe to call multiple times)
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargets();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmParsers();
   llvm::InitializeAllAsmPrinters();
 
-  // Get host target triple
   std::string targetTriple = llvm::sys::getDefaultTargetTriple();
   TheModule->setTargetTriple(targetTriple);
-
   std::cout << "[*] Detected target triple: " << targetTriple << "\n";
 
-  // Lookup the target
   std::string         error;
   const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
   if (!target)
@@ -141,26 +139,97 @@ inline auto CreateHostTargetMachine() -> llvm::TargetMachine*
     return nullptr;
   }
 
-  // Get host CPU and feature set
   std::string cpu = llvm::sys::getHostCPUName().str();
-
   if (cpu.empty())
-    cpu = __MARE_CPU_STANDARD__; // fallback to generic
+    cpu = __MARE_CPU_STANDARD__;
 
   std::cout << "[*] Host CPU: " << cpu << "\n";
-  llvm::TargetOptions  opt;
+
+  if (mareArgs.showCPUFeatures)
+  {
+    // Feature detection
+    llvm::StringMap<bool> hostFeatures = llvm::sys::getHostCPUFeatures();
+    std::string           features;
+    for (const auto& f : hostFeatures)
+    {
+      if (f.second)
+        features += f.first().str() + ",";
+    }
+    if (!features.empty())
+      features.pop_back(); // Remove trailing comma
+
+    std::cout << "[*] CPU features: " << features << "\n";
+  }
+
+  llvm::TargetOptions opt;
+  opt.AllowFPOpFusion      = llvm::FPOpFusion::Fast;
+  opt.UnsafeFPMath         = true;
+  opt.NoInfsFPMath         = true;
+  opt.NoNaNsFPMath         = true;
+  opt.MCOptions.AsmVerbose = true;
+  opt.EnableFastISel       = true;
+
   llvm::TargetMachine* targetMachine =
     target->createTargetMachine(targetTriple, cpu, "", opt, Reloc::PIC_);
 
   if (!targetMachine)
   {
-    llvm::errs() << "[!] Failed to create TargetMachine for triple: " << targetTriple << "\n";
+    llvm::errs() << "[!] Failed to create TargetMachine\n";
     return nullptr;
   }
 
   TheModule->setDataLayout(targetMachine->createDataLayout());
+  std::cout << "[*] DataLayout: " << TheModule->getDataLayout().getStringRepresentation() << "\n";
 
   return targetMachine;
+}
+
+static auto AddOptimizationsAndEmitObjectFile() -> bool
+{
+  auto TargetMachine = CreateHostTargetMachine();
+
+  std::error_code EC;
+  raw_fd_ostream  dest(__MARE_OBJECT_FILE_NAME__, EC, sys::fs::OF_None);
+
+  if (EC)
+  {
+    llvm::errs() << "[!] Could not open output file: " << EC.message() << "\n";
+    return false;
+  }
+
+  // --- Set up the new pass manager ---
+  llvm::LoopAnalysisManager     loopAM;
+  llvm::FunctionAnalysisManager functionAM;
+  llvm::CGSCCAnalysisManager    cgsccAM;
+  llvm::ModuleAnalysisManager   moduleAM;
+
+  llvm::PassBuilder PB(TargetMachine);
+
+  // Register required analyses
+  PB.registerModuleAnalyses(moduleAM);
+  PB.registerCGSCCAnalyses(cgsccAM);
+  PB.registerFunctionAnalyses(functionAM);
+  PB.registerLoopAnalyses(loopAM);
+  PB.crossRegisterProxies(loopAM, functionAM, cgsccAM, moduleAM);
+
+  // Create the optimization pipeline at -O3
+  llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+
+  // Run the pass pipeline
+  MPM.run(*TheModule, moduleAM);
+
+  // Emit object file
+  llvm::legacy::PassManager codeGenPass;
+  if (TargetMachine->addPassesToEmitFile(codeGenPass, dest, nullptr, CodeGenFileType::ObjectFile))
+  {
+    llvm::errs() << "[!] TargetMachine can't emit file of this type\n";
+    return false;
+  }
+
+  codeGenPass.run(*TheModule);
+  dest.flush();
+
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -195,28 +264,7 @@ auto main(int argc, char* argv[]) -> int
     return 1;
   }
 
-  auto TargetMachine = CreateHostTargetMachine();
-
-  std::error_code EC;
-  raw_fd_ostream  dest(__MARE_OBJECT_FILE_NAME__, EC, sys::fs::OF_None);
-
-  if (EC)
-  {
-    errs() << "Could not open file: " << EC.message();
-    return 1;
-  }
-
-  legacy::PassManager pass;
-  auto                FileType = CodeGenFileType::ObjectFile;
-
-  if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType))
-  {
-    errs() << "TheTargetMachine can't emit a file of this type";
-    return 1;
-  }
-
-  pass.run(*TheModule);
-  dest.flush();
+  AddOptimizationsAndEmitObjectFile();
 
   outs() << COLOR_UNDERL << COLOR_BOLD << COLOR_GREEN
          << "-- Compiled to Object File: " << __MARE_OBJECT_FILE_NAME__ << "\n"

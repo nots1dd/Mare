@@ -49,6 +49,20 @@
 // Optional: macro for null terminator
 #define ESCAPE_SEQUENCE_NULL '\0'
 
+#define LEFT_PAREN        '('
+#define RIGHT_PAREN       ')'
+#define STATEMENT_DELIM   ';'
+#define BLOCK_SCOPE_BEGIN '{'
+#define BLOCK_SCOPE_END   '}'
+#define ARG_DELIM_PROTO   ',' // (a, b) --> comma is the argument delimiter in the prototype
+
+//===----------------------------------------------------------------------===//
+// Unary and Binary Function Decl
+//===----------------------------------------------------------------------===//
+
+#define __MARE_UNARY_FUNC_DECL__  "_mare_std_unary"
+#define __MARE_BINARY_FUNC_DECL__ "_mare_std_binary"
+
 using namespace llvm;
 using namespace llvm::sys;
 
@@ -83,7 +97,7 @@ enum Token
   // commands
   tok_def    = -2,
   tok_extern = -3,
-  tok_fetch  = -24,
+  tok_grab   = -24,
 
   // primary
   tok_identifier = -4,

@@ -49,7 +49,7 @@ inline auto extractPrecedence() -> std::optional<unsigned>
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static auto GetTokPrecedence() -> int
 {
-  if (!isascii(Tokenizer::CurTok))
+  if (!Tokenizer::IsCurTokAscii())
     return -1;
 
   // Make sure it's a declared binop.
@@ -62,35 +62,14 @@ static auto GetTokPrecedence() -> int
 /// numberexpr ::= number (must ensure that the CurTok is tok_number !!)
 static auto ParseNumberExpr() -> std::unique_ptr<Expr>
 {
-  llvm::Type* llvmType = nullptr;
+  llvm::Type* numType = Tokenizer::assignDTypeToNumExpr();
 
-  std::cout << Global::NumTok << std::endl;
+  if (numType == nullptr)
+    return LogError("Unknown numeric token type");
 
-  switch (Global::NumTok)
-  {
-    case tok_int8:
-      llvmType = MARE_INT8_TYPE;
-      break;
-    case tok_int16:
-      llvmType = MARE_INT16_TYPE;
-      break;
-    case tok_int32:
-      llvmType = MARE_INT32_TYPE;
-      break;
-    case tok_int64:
-      llvmType = MARE_INT64_TYPE;
-      break;
-    case tok_double:
-      llvmType = MARE_DOUBLE_TYPE;
-      break;
-    case tok_float:
-      llvmType = MARE_FLOAT_TYPE;
-    default:
-      return LogError("Unknown numeric token type");
-  }
-
-  auto Result = std::make_unique<NumberExpr>(Global::NumVal, llvmType);
+  auto Result = std::make_unique<NumberExpr>(Global::NumVal, numType);
   Tokenizer::getNextToken(); // consume the number
+
   return Result;
 }
 
@@ -102,7 +81,7 @@ static auto ParseParenExpr() -> std::unique_ptr<Expr>
   if (!V)
     return nullptr;
 
-  if (Tokenizer::CurTok != ')')
+  if (Tokenizer::CurTok != RIGHT_PAREN)
     return LogError("expected ')'");
   Tokenizer::getNextToken(); // eat ).
   return V;
@@ -117,13 +96,13 @@ static auto ParseIdentifierExpr() -> std::unique_ptr<Expr>
 
   Tokenizer::getNextToken(); // eat identifier.
 
-  if (Tokenizer::CurTok != '(') // Simple variable ref.
+  if (Tokenizer::CurTok != LEFT_PAREN) // Simple variable ref.
     return std::make_unique<VariableExpr>(IdName);
 
   // Call.
   Tokenizer::getNextToken(); // eat (
   std::vector<std::unique_ptr<Expr>> Args;
-  if (Tokenizer::CurTok != ')')
+  if (Tokenizer::CurTok != RIGHT_PAREN)
   {
     while (true)
     {
@@ -132,10 +111,10 @@ static auto ParseIdentifierExpr() -> std::unique_ptr<Expr>
       else
         return nullptr;
 
-      if (Tokenizer::CurTok == ')')
+      if (Tokenizer::CurTok == RIGHT_PAREN)
         break;
 
-      if (Tokenizer::CurTok != ',')
+      if (Tokenizer::CurTok != ARG_DELIM_PROTO)
         return LogError("Expected ')' or ',' in argument list.");
       Tokenizer::getNextToken();
     }
@@ -250,93 +229,9 @@ static auto ParseVarExpr() -> std::unique_ptr<Expr>
   return std::make_unique<VarExpr>(VarName, std::move(Body));
 }
 
-static auto ProcessString(std::string& ProcessedStr) -> void
-{
-  for (size_t i = 0; i < Global::StringVal.size(); ++i)
-  {
-    if (Global::StringVal[i] == ESCAPE_SEQUENCE_BACKSLASH &&
-        i + 1 < Global::StringVal.size()) // Check for escape sequences
-    {
-      switch (Global::StringVal[i + 1])
-      {
-        case 'n':
-          ProcessedStr += ESCAPE_SEQUENCE_NEWLINE;
-          break;
-        case 'r':
-          ProcessedStr += ESCAPE_SEQUENCE_CARRIAGE_RET;
-          break;
-        case 't':
-          ProcessedStr += ESCAPE_SEQUENCE_TAB;
-          break;
-        case 'b':
-          ProcessedStr += ESCAPE_SEQUENCE_BACKSPACE;
-          break; // Backspace
-        case 'f':
-          ProcessedStr += ESCAPE_SEQUENCE_FORMFEED;
-          break; // Form feed
-        case 'v':
-          ProcessedStr += ESCAPE_SEQUENCE_VERTICAL_TAB;
-          break; // Vertical tab
-        case '0':
-          ProcessedStr += ESCAPE_SEQUENCE_NULL;
-          break; // Null character
-        case ESCAPE_SEQUENCE_BACKSLASH:
-          ProcessedStr += ESCAPE_SEQUENCE_BACKSLASH;
-          break; // Backslash
-        case '"':
-          ProcessedStr += '"';
-          break; // Double quote
-
-        // Hexadecimal escape sequence: \xHH
-        case 'x':
-          if (i + 3 < Global::StringVal.size() && isxdigit(Global::StringVal[i + 2]) &&
-              isxdigit(Global::StringVal[i + 3]))
-          {
-            std::string hexStr = Global::StringVal.substr(i + 2, 2);
-            ProcessedStr += static_cast<char>(std::stoi(hexStr, nullptr, 16));
-            i += 3; // Skip \xHH
-          }
-          else
-          {
-            ProcessedStr += "\\x"; // Invalid sequence, keep as is
-          }
-          break;
-
-        // Unicode escape sequence: \uHHHH (Basic Multilingual Plane)
-        case 'u':
-          if (isxdigit(Global::StringVal[i + 2]) && 5 + i < Global::StringVal.size() &&
-              isxdigit(Global::StringVal[i + 3]) && isxdigit(Global::StringVal[i + 4]) &&
-              isxdigit(Global::StringVal[i + 5]))
-          {
-            std::string unicodeStr   = Global::StringVal.substr(i + 2, 4);
-            int         unicodeValue = std::stoi(unicodeStr, nullptr, 16);
-            ProcessedStr += static_cast<char>(unicodeValue); // Basic Unicode handling
-            i += 5;                                          // Skip \uHHHH
-          }
-          else
-          {
-            ProcessedStr += "\\u"; // Invalid sequence, keep as is
-          }
-          break;
-
-        default:
-          ProcessedStr += Global::StringVal[i];     // Keep original '\'
-          ProcessedStr += Global::StringVal[i + 1]; // Keep next char as is
-      }
-      ++i; // Skip next char as it’s part of escape sequence
-    }
-    else
-    {
-      ProcessedStr += Global::StringVal[i]; // Normal character
-    }
-  }
-}
-
 static auto ParseStringExpr() -> std::unique_ptr<Expr>
 {
-  std::string ProcessedStr;
-
-  ProcessString(ProcessedStr); // check for escape sequences
+  const std::string ProcessedStr = Util::ProcessString(); // check for escape sequences
 
   auto Result = std::make_unique<StringExpr>(ProcessedStr);
   Tokenizer::getNextToken(); // Consume the string token
@@ -463,11 +358,54 @@ static auto ParseBlock() -> std::unique_ptr<Expr>
     Exprs.push_back(std::move(Expr));
 
     // Optional semicolon (skip if you don't require it)
-    if (Tokenizer::CurTok == ';')
+    if (Tokenizer::CurTok == STATEMENT_DELIM)
       Tokenizer::getNextToken();
   }
 
   return std::make_unique<BlockExpr>(std::move(Exprs));
+}
+
+static auto ParseTypedArgument() -> std::optional<std::pair<std::string, llvm::Type*>>
+{
+  llvm::Type* ArgType = MARE_DOUBLE_TYPE;
+
+  switch (Tokenizer::CurTok)
+  {
+    case tok_double:
+      break;
+    case tok_float:
+      ArgType = MARE_FLOAT_TYPE;
+      break;
+    case tok_int64:
+      ArgType = MARE_INT64_TYPE;
+      break;
+    case tok_int32:
+      ArgType = MARE_INT32_TYPE;
+      break;
+    case tok_int16:
+      ArgType = MARE_INT16_TYPE;
+      break;
+    case tok_int8:
+      ArgType = MARE_INT8_TYPE;
+      break;
+    case tok_string:
+      ArgType = MARE_STRPTR_TYPE;
+      break;
+    case tok_identifier:
+      break;
+    default:
+      return LogErrorP("Unexpected token in argument list"), std::nullopt;
+  }
+
+  if (Tokenizer::CurTok != tok_identifier)
+    Tokenizer::getNextToken(); // Eat the type token
+
+  if (Tokenizer::CurTok != tok_identifier)
+    return LogErrorP("Expected argument name after type"), std::nullopt;
+
+  std::string name = Global::IdentifierStr;
+  Tokenizer::getNextToken(); // Eat identifier
+  return std::make_pair(name, ArgType);
 }
 
 /// prototype
@@ -476,191 +414,87 @@ static auto ParseBlock() -> std::unique_ptr<Expr>
 ///   ::= unary LETTER (id)
 static auto ParsePrototype() -> std::unique_ptr<Prototype>
 {
-  llvm::Type* RetType = MARE_VOID_TYPE; // Default to void
-
+  llvm::Type* RetType = MARE_VOID_TYPE;
   std::string FnName;
-  unsigned    Kind             = 0; // 0 = identifier, 1 = unary, 2 = binary.
-  unsigned    BinaryPrecedence = 30;
+  unsigned    Kind = 0, BinaryPrecedence = 30;
 
   switch (Tokenizer::CurTok)
   {
-    default:
-      return LogErrorP("Expected function name in prototype");
     case tok_identifier:
       FnName = Global::IdentifierStr;
       Kind   = 0;
       Tokenizer::getNextToken();
       break;
+
     case tok_unary:
       Tokenizer::getNextToken();
       if (!Tokenizer::IsCurTokAscii())
         return LogErrorP("Expected unary operator");
-      FnName = "unary";
-      FnName += Tokenizer::CurTokChar();
-      Kind = 1;
+      FnName = __MARE_UNARY_FUNC_DECL__ + std::string(1, Tokenizer::CurTokChar());
+      Kind   = 1;
       Tokenizer::getNextToken();
       break;
+
     case tok_binary:
       Tokenizer::getNextToken();
       if (!Tokenizer::IsCurTokAscii())
         return LogErrorP("Expected binary operator");
-      FnName = "binary";
-      FnName += Tokenizer::CurTokChar();
-      Kind = 2;
+      FnName = __MARE_BINARY_FUNC_DECL__ + std::string(1, Tokenizer::CurTokChar());
+      Kind   = 2;
       Tokenizer::getNextToken();
-
-      // Read the precedence if present.
       if (Tokenizer::CurTok == tok_number)
       {
         auto maybePrec = extractPrecedence();
         if (!maybePrec)
           return LogErrorP("Invalid precedence: must be 1..100");
-
         BinaryPrecedence = *maybePrec;
         Tokenizer::getNextToken();
       }
       break;
+
+    default:
+      return LogErrorP("Expected function name in prototype");
   }
 
-  // FUNCTIONAL ARGUMENTS
-
-  if (Tokenizer::CurTok != '(')
+  if (Tokenizer::CurTok != LEFT_PAREN)
     return LogErrorP("Expected '(' in prototype");
-
-  std::vector<std::pair<std::string, llvm::Type*>> Args;
-  Tokenizer::getNextToken(); // Eat '('
-
-  while (Tokenizer::TokenIsValidArg())
-  {
-    llvm::Type* ArgType = MARE_DOUBLE_TYPE; // Default
-
-    switch (Tokenizer::CurTok)
-    {
-      case tok_identifier:
-        break;
-
-      case tok_double:
-        Tokenizer::getNextToken(); // Eat 'double'
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'double'");
-        break;
-
-      case tok_float:
-        ArgType = MARE_FLOAT_TYPE;
-        Tokenizer::getNextToken();
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after float type!");
-        break;
-
-      case tok_int64:
-        ArgType = MARE_INT64_TYPE;
-        Tokenizer::getNextToken();
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'int64'");
-        break;
-
-      case tok_int32:
-        ArgType = MARE_INT32_TYPE;
-        Tokenizer::getNextToken();
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'int32'");
-        break;
-
-      case tok_int16:
-        ArgType = MARE_INT16_TYPE;
-        Tokenizer::getNextToken();
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'int16'");
-        break;
-
-      case tok_int8:
-        ArgType = MARE_INT8_TYPE;
-        Tokenizer::getNextToken();
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'int8'");
-        break;
-
-      case tok_string:
-        ArgType = MARE_STRPTR_TYPE;
-        Tokenizer::getNextToken(); // Eat 'string'
-        if (Tokenizer::CurTok != tok_identifier)
-          return LogErrorP("Expected argument name after 'string'");
-        break;
-
-      default:
-        return LogErrorP("Unexpected token in argument list");
-    }
-
-    // CurTok must be identifier now
-    Args.emplace_back(Global::IdentifierStr, ArgType);
-    Tokenizer::getNextToken(); // Eat identifier
-
-    if (Tokenizer::CurTok == ',')
-      Tokenizer::getNextToken(); // Eat ','
-  }
-
-  if (Tokenizer::CurTok != ')')
-    return LogErrorP("Expected ')' in argument decl of prototype!");
-
-  Tokenizer::getNextToken(); // Eat ')'
-
-  // Check if return type is explicitly specified
-  if (Tokenizer::CurTok == tok_arrow)
-  {
-    Tokenizer::getNextToken(); // Consume `->`
-
-    switch (Tokenizer::CurTok)
-    {
-      case tok_void:
-        RetType = MARE_VOID_TYPE;
-        break;
-
-      case tok_double:
-        RetType = MARE_DOUBLE_TYPE;
-        break;
-
-      case tok_float:
-        RetType = MARE_FLOAT_TYPE;
-        break;
-
-      case tok_string:
-        RetType = MARE_STRPTR_TYPE;
-        break;
-
-      case tok_int8:
-        RetType = MARE_INT8_TYPE;
-        break;
-
-      case tok_int16:
-        RetType = MARE_INT16_TYPE;
-        break;
-
-      case tok_int32:
-        RetType = MARE_INT32_TYPE;
-        break;
-
-      case tok_int64:
-        RetType = MARE_INT64_TYPE;
-        break;
-
-      default:
-        return LogErrorP("Expected return type after '->'");
-    }
-
-    Tokenizer::getNextToken(); // Consume the return type token
-  }
-
-  // Verify correct operand count for operators.
-  if (Kind && Args.size() != Kind)
-    return LogErrorP("Invalid number of operands for operator");
 
   std::vector<std::string> ArgNames;
   std::vector<llvm::Type*> ArgTypes;
-  for (const auto& Arg : Args)
+  Tokenizer::getNextToken(); // eat '('
+
+  while (Tokenizer::TokenIsValidArg())
   {
-    ArgNames.push_back(Arg.first);
-    ArgTypes.push_back(Arg.second);
+    auto maybeArg = ParseTypedArgument();
+    if (!maybeArg)
+      return nullptr;
+
+    ArgNames.push_back(maybeArg->first);
+    ArgTypes.push_back(maybeArg->second);
+
+    if (Tokenizer::CurTok == ',')
+      Tokenizer::getNextToken(); // eat ','
   }
+
+  if (Tokenizer::CurTok != RIGHT_PAREN)
+    return LogErrorP("Expected ')' in argument decl");
+
+  Tokenizer::getNextToken(); // eat ')'
+
+  if (Tokenizer::CurTok == tok_arrow)
+  {
+    Tokenizer::getNextToken(); // consume the arrow
+    RetType = Util::ParseReturnTypeProto(Tokenizer::CurTok);
+    if (RetType == nullptr)
+    {
+      LogErrorP("Expected return type after '->'");
+      return nullptr;
+    }
+    Tokenizer::getNextToken(); // eat return type
+  }
+
+  if (Kind && ArgNames.size() != Kind)
+    return LogErrorP("Invalid number of operands for operator");
 
   return std::make_unique<Prototype>(FnName, ArgNames, ArgTypes, RetType, Kind != 0,
                                      BinaryPrecedence);
@@ -669,15 +503,14 @@ static auto ParsePrototype() -> std::unique_ptr<Prototype>
 /// definition ::= 'fn' prototype expression
 static auto ParseDefinition() -> std::unique_ptr<FunctionalAST>
 {
-  Tokenizer::getNextToken(); // eat def.
+  Tokenizer::getNextToken(); // eat def
   auto Proto = ParsePrototype();
   if (!Proto)
     return nullptr;
 
   if (Tokenizer::CurTok != '{')
   {
-    printDiagnostic(DiagnosticLevel::Error, "Expected '{' to start function body",
-                    mareArgs.inputFile, fileCoords.line, fileCoords.col);
+    LogError("Expected '{' to start function body");
     return nullptr;
   }
 

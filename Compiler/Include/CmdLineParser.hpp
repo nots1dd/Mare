@@ -12,30 +12,41 @@
 // --- Print Utilities ---
 void printError(const std::string& msg)
 {
-  std::cerr << COLOR_RED << "error: " << COLOR_RESET << msg << "\n";
+  std::cerr << ADD_COLOR(COLOR_RED, "error: ") << msg << "\n";
 }
 
 void printHint(const std::string& msg)
 {
-  std::cerr << COLOR_CYAN << "hint:  " << COLOR_RESET << msg << "\n";
+  std::cerr << ADD_COLOR(COLOR_CYAN, "hint:  ") << msg << "\n";
 }
 
 void printInfo(const std::string& msg)
 {
-  std::cout << COLOR_GREEN << "info:  " << COLOR_RESET << msg << "\n";
+  std::cout << ADD_COLOR(COLOR_GREEN, "info:  ") << msg << "\n";
 }
 
 // --- Argument Parser ---
 struct ArgParser
 {
   FileContent__ inputFile;
-  StdFilePath__ inputPath  = std::filesystem::current_path();
-  FilePath__    linkerPath = "/usr/bin/clang++";
-  FilePath__    outputFile = "a.out";
+  StdFilePath__ inputPath       = std::filesystem::current_path();
+  FilePath__    linkerPath      = "/usr/bin/clang++";
+  FilePath__    outputFile      = "a.out";
+  bool          showCPUFeatures = false;
   std::ifstream inputFileStream;
 
   void printUsage()
   {
+    using Entry = std::pair<std::string, std::string>;
+
+    const std::vector<Entry> options = {
+      {"-o <file>", "Set output binary filename (default: a.out)"},
+      {"--output=<file>", "Same as -o"},
+      {"--linker=<path>", "Path to linker (default: /usr/bin/clang++)"},
+      {"--show-cpu-features", "Show the current target's CPU features (LLVM API)"},
+      {"-h, --help", "Show this help message"}};
+
+    // Header
     std::cout << COLOR_BOLD << COLOR_YELLOW
               << "\n╭─────────────── Mare Compiler Help ───────────────╮\n"
               << "│  Version  : " << COLOR_RESET << __MARE_VERSION__ << COLOR_BOLD << COLOR_YELLOW
@@ -51,21 +62,24 @@ struct ArgParser
               << "╰──────────────────────────────────────────────────╯\n"
               << COLOR_RESET;
 
+    // Usage
     std::cout << COLOR_BOLD << "\nUsage:\n"
-              << COLOR_RESET << "  " << COLOR_CYAN << "mare" << COLOR_RESET << " [options] <file"
+              << COLOR_RESET << "  " << ADD_COLOR(COLOR_CYAN, "mare") << " [options] <file"
               << __MARE_FILE_EXTENSION_STEM__ << ">\n";
 
-    std::cout << COLOR_BOLD << "\nOptions:\n"
-              << COLOR_RESET << "  " << COLOR_GREEN << "-o <file>" << COLOR_RESET
-              << "           Set output binary filename (default: a.out)\n"
-              << "  " << COLOR_GREEN << "--output=<file>" << COLOR_RESET << "    Same as -o\n"
-              << "  " << COLOR_GREEN << "--linker=<path>" << COLOR_RESET
-              << "    Path to linker (default: /usr/bin/clang++)\n"
-              << "  " << COLOR_GREEN << "-h, --help" << COLOR_RESET
-              << "         Show this help message\n";
+    // Options
+    std::cout << ADD_COLOR(COLOR_BOLD, "\nOptions:\n");
+    for (const auto& [flag, desc] : options)
+    {
+      std::cout << "  " << COLOR_GREEN << flag << COLOR_RESET;
+      if (flag.size() < 20)
+        std::cout << std::string(20 - flag.size(), ' '); // align descriptions
+      std::cout << desc << "\n";
+    }
 
-    std::cout << COLOR_BOLD << "\nExample:\n"
-              << COLOR_RESET << "  mare -o myprog main" << __MARE_FILE_EXTENSION_STEM__ << "\n"
+    // Example
+    std::cout << ADD_COLOR(COLOR_BOLD, "\nExample:\n") << "  mare -o myprog main"
+              << __MARE_FILE_EXTENSION_STEM__ << "\n"
               << std::endl;
   }
 
@@ -98,6 +112,10 @@ struct ArgParser
       else if (arg.starts_with("--output="))
       {
         outputFile = arg.substr(9);
+      }
+      else if (arg.starts_with("--show-cpu-features"))
+      {
+        showCPUFeatures = true;
       }
       else if (!arg.starts_with("-") && inputFile.empty())
       {

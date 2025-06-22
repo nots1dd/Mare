@@ -24,6 +24,9 @@
 #define COLOR_GRAY        "\033[1;90m"
 #define COLOR_BOLD_YELLOW "\033[1;33m"
 
+#define ADD_COLOR(color, msg)      color msg COLOR_RESET
+#define ADD_BOLD_COLOR(color, msg) COLOR_BOLD ADD_COLOR(color, msg)
+
 // ────────────────────────────────────────────────
 // Labels with Stylized Framing
 // ────────────────────────────────────────────────

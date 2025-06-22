@@ -1,21 +1,22 @@
 #pragma once
 
 #include "CmdLineParser.hpp"
+#include "Compiler.hpp"
 #include "ErrorHandling.hpp"
-
-namespace Mare::Global
-{
-static std::string  IdentifierStr; // Filled in if tok_identifier
-static int          NumTok;
-static ValueVariant NumVal;
-static std::string  StringVal;
-static bool         isExtern = false;
-} // namespace Mare::Global
+#include "PrimitiveTypes.hpp"
 
 namespace Mare::Tokenizer
 {
 
 using namespace Mare::Global;
+
+/// CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
+/// token the parser is looking at.  getNextToken reads another token from the
+/// lexer and updates CurTok with its results.
+static Token__ CurTok;
+
+inline Coords LastLine = 1;
+inline Coords LastCol  = 0;
 
 static auto setNumVal(const std::string& numStr, bool isFloatLike, bool hasFSuffix) -> int
 {
@@ -35,16 +36,14 @@ static auto setNumVal(const std::string& numStr, bool isFloatLike, bool hasFSuff
     }
     else
     {
-      int64_t val = std::stoll(numStr);
+      i64 val = std::stoll(numStr);
 
       NumVal = val;
-      if (val >= std::numeric_limits<int8_t>::min() && val <= std::numeric_limits<int8_t>::max())
+      if (val >= Util::dtype_min<i8>() && val <= Util::dtype_max<i8>())
         return tok_int8;
-      else if (val >= std::numeric_limits<int16_t>::min() &&
-               val <= std::numeric_limits<int16_t>::max())
+      else if (val >= Util::dtype_min<i16>() && val <= Util::dtype_max<i16>())
         return tok_int16;
-      else if (val >= std::numeric_limits<int32_t>::min() &&
-               val <= std::numeric_limits<int32_t>::max())
+      else if (val >= Util::dtype_min<i32>() && val <= Util::dtype_min<i32>())
         return tok_int32;
       else
         return tok_int64;
@@ -66,11 +65,6 @@ static auto setNumVal(const std::string& numStr, bool isFloatLike, bool hasFSuff
 // Tokenizer
 //===----------------------------------------------------------------------===//
 
-/// CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
-/// token the parser is looking at.  getNextToken reads another token from the
-/// lexer and updates CurTok with its results.
-static int CurTok;
-
 static auto getNextChar() -> int
 {
   int ch = mareArgs.inputFileStream.get();
@@ -89,9 +83,9 @@ static auto getNextChar() -> int
 }
 
 /// gettok - Return the next token from standard input.
-static auto gettok() -> int
+static auto gettok() -> Token__
 {
-  static int LastChar = ' ';
+  static Token__ LastChar = ' ';
 
   // Skip any whitespace.
   while (isspace(LastChar))
@@ -134,6 +128,8 @@ static auto gettok() -> int
       return tok_for;
     if (IdentifierStr == "in")
       return tok_in;
+    if (IdentifierStr == "grab")
+      return tok_grab;
     if (IdentifierStr == "binary")
       return tok_binary;
     if (IdentifierStr == "unary")
@@ -176,20 +172,14 @@ static auto gettok() -> int
       LastChar = getNextChar();
     } while (isdigit(LastChar) || LastChar == '.');
 
-    //std::cout << "[lexer] Parsed numeric string: " << NumStr << "\n";
-
     bool hasFSuffix = false;
     if (LastChar == 'f' || LastChar == 'F')
     {
       hasFSuffix = true;
       LastChar   = getNextChar();
-      std::cout << "[lexer] Found 'f' suffix — treating as float\n Got LastChar: " << (char)LastChar
-                << std::endl;
     }
 
     NumTok = setNumVal(NumStr, isFloatLike, hasFSuffix);
-    //std::cout << "[lexer] Token type: " << NumTok << ", Value = ";
-    //std::visit([](auto&& val) { std::cout << val << "\n"; }, NumVal);
 
     return tok_number;
   }
@@ -222,8 +212,8 @@ static auto gettok() -> int
     return tok_eof;
 
   // Otherwise, just return the character as its ASCII value.
-  int ThisChar = LastChar;
-  LastChar     = getNextChar();
+  Token__ ThisChar = LastChar;
+  LastChar         = getNextChar();
   return ThisChar;
 }
 
@@ -249,6 +239,33 @@ inline auto IsCurTokPrimaryExpr() -> bool
   return (!IsCurTokAscii() || CurTok == '(' || CurTok == ',');
 }
 
-static auto getNextToken() -> int { return CurTok = gettok(); }
+static auto getNextToken() -> Token__ { return CurTok = gettok(); }
 
+inline auto assignDTypeToNumExpr() -> llvm::Type*
+{
+  llvm::Type* llvmType = nullptr;
+
+  switch (Global::NumTok)
+  {
+    case tok_int8:
+      llvmType = MARE_INT8_TYPE;
+      break;
+    case tok_int16:
+      llvmType = MARE_INT16_TYPE;
+      break;
+    case tok_int32:
+      llvmType = MARE_INT32_TYPE;
+      break;
+    case tok_int64:
+      llvmType = MARE_INT64_TYPE;
+      break;
+    case tok_double:
+      llvmType = MARE_DOUBLE_TYPE;
+      break;
+    case tok_float:
+      llvmType = MARE_FLOAT_TYPE;
+  }
+
+  return llvmType;
+}
 } // namespace Mare::Tokenizer

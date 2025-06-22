@@ -1,0 +1,27 @@
+extern __mare_printstr(string a) -> void;
+extern __mare_printi8(i8 a) -> void;
+
+fn printIntWithNewLine(i8 idx) -> void 
+{
+  __mare_printstr("Found index: ");
+  __mare_printi8(idx);
+  __mare_printstr("\n");
+}
+
+fn loopdeloop(i8 iter) -> void 
+{
+  for i = 1, i < iter, 1 in
+    printIntWithNewLine(i);
+
+  __mare_printstr("End of loop!\n");
+}
+
+fn square() -> i8 {
+  ret 2 * 2;
+}
+
+fn main() -> void 
+{
+  var x = 0;
+  loopdeloop(7);  
+}

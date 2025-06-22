@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Compiler.hpp"
 #include "GenHelper.hpp"
+#include "Globals.hpp"
 #include "PrimitiveTypes.hpp"
 
 namespace Mare
@@ -35,32 +37,8 @@ static auto CreateEntryBlockAlloca(llvm::Function* TheFunction, llvm::Type* Allo
 
 inline auto NumberExpr::codegen() -> llvm::Value*
 {
-  if (std::holds_alternative<int64_t>(Val))
-  {
-    return llvm::ConstantInt::get(ValType, std::get<int64_t>(Val), /*isSigned=*/true);
-  }
-  else if (std::holds_alternative<int32_t>(Val))
-  {
-    return llvm::ConstantInt::get(ValType, std::get<int32_t>(Val), /*isSigned=*/true);
-  }
-  else if (std::holds_alternative<int16_t>(Val))
-  {
-    return llvm::ConstantInt::get(ValType, std::get<int16_t>(Val), /*isSigned=*/true);
-  }
-  else if (std::holds_alternative<int8_t>(Val))
-  {
-    return llvm::ConstantInt::get(ValType, std::get<int8_t>(Val), /*isSigned=*/true);
-  }
-  else if (std::holds_alternative<double>(Val))
-  {
-    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(std::get<double>(Val)));
-  }
-  else if (std::holds_alternative<float>(Val))
-  {
-    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(std::get<float>(Val)));
-  }
-
-  return nullptr; // Should never hit this if parsing is correct
+  llvm::Constant* constVal = Util::GetConstantFromValue(Val, ValType, *TheContext);
+  return constVal;
 }
 
 inline auto VariableExpr::codegen() -> Value*
@@ -72,6 +50,9 @@ inline auto VariableExpr::codegen() -> Value*
 
   // Use stored type or infer from alloca
   Type* loadType = VarType ? VarType : V->getAllocatedType();
+
+  Global::UpdateCodegenCoords();
+
   return Builder->CreateLoad(loadType, V, Name.c_str());
 }
 
@@ -81,9 +62,11 @@ inline auto UnaryExpr::codegen() -> Value*
   if (!OperandV)
     return nullptr;
 
-  llvm::Function* F = getFunction(std::string("unary") + Opcode);
+  llvm::Function* F = getFunction(std::string(__MARE_UNARY_FUNC_DECL__) + Opcode);
   if (!F)
-    return LogErrorV("Unknown unary operator");
+    return LogErrorV("Unknown unary operator found during codegen!");
+
+  Global::UpdateCodegenCoords();
 
   return Builder->CreateCall(F, OperandV, "unop");
 }
@@ -106,6 +89,7 @@ inline auto BinaryExpr::codegen() -> llvm::Value*
       return LogErrorV("Unknown variable name");
 
     Builder->CreateStore(Val, Variable);
+    Global::UpdateCodegenCoords();
     return Val;
   }
 
@@ -154,6 +138,8 @@ inline auto BinaryExpr::codegen() -> llvm::Value*
   // Refresh common type
   LT = L->getType();
 
+  Global::UpdateCodegenCoords();
+
   switch (Op)
   {
     case '+':
@@ -179,7 +165,7 @@ inline auto BinaryExpr::codegen() -> llvm::Value*
   }
 
   // User-defined operator fallback
-  std::string FnName = "binary";
+  std::string FnName = __MARE_BINARY_FUNC_DECL__;
   FnName += Op;
   if (llvm::Function* F = getFunction(FnName))
     return Builder->CreateCall(F, {L, R}, "binop");
@@ -208,6 +194,7 @@ inline auto CallExpr::codegen() -> Value*
       return nullptr;
   }
 
+  Global::UpdateCodegenCoords();
   // If the function returns void, don't create a named call.
   if (CalleeF->getReturnType()->isVoidTy())
   {
@@ -228,6 +215,8 @@ inline auto StringExpr::codegen() -> llvm::Value*
   // Generate GEP to get pointer to the string data
   llvm::Value* Zero      = llvm::ConstantInt::get(MARE_INT32_TYPE, 0);
   llvm::Value* StringPtr = Builder->CreateGEP(GV->getValueType(), GV, {Zero, Zero}, "strptr");
+
+  Global::UpdateCodegenCoords();
 
   // Return the string pointer directly
   return StringPtr;
@@ -343,6 +332,9 @@ inline auto IfExpr::codegen() -> Value*
   PHINode* PN = Builder->CreatePHI(ThenType, 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
+
+  Global::UpdateCodegenCoords();
+
   return PN;
 }
 
@@ -481,6 +473,8 @@ inline auto ForExpr::codegen() -> Value*
   else
     NamedValues.erase(VarName);
 
+  Global::UpdateCodegenCoords();
+
   // for expr returns zero value of the loop variable type
   return Constant::getNullValue(LoopVarType);
 }
@@ -515,6 +509,8 @@ inline auto VarExpr::codegen() -> llvm::Value*
   // Register in symbol table
   NamedValues[VarName] = Alloca;
 
+  Global::UpdateCodegenCoords();
+
   // Return the value just assigned (or null if you'd prefer this to be void)
   return InitVal;
 }
@@ -531,6 +527,8 @@ inline auto Prototype::codegen() -> llvm::Function*
   unsigned Idx = 0;
   for (auto& Arg : F->args())
     Arg.setName(Args[Idx++]);
+
+  Global::UpdateCodegenCoords();
 
   return F;
 }
@@ -587,6 +585,8 @@ inline auto FunctionalAST::codegen() -> llvm::Function*
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
 
+  Global::UpdateCodegenCoords();
+
   if (P.isBinaryOp())
     Mare::Parser::BinopPrecedence.erase(P.getOperatorName());
   return nullptr;
@@ -613,14 +613,19 @@ inline auto BlockExpr::codegen() -> llvm::Value*
 
 auto ReturnExpr::codegen() -> llvm::Value*
 {
+
   if (Exp)
   {
     llvm::Value* RetVal = Exp->codegen();
     if (!RetVal)
       return nullptr;
 
+    Global::UpdateCodegenCoords();
+
     return Builder->CreateRet(RetVal);
   }
+
+  Global::UpdateCodegenCoords();
 
   // For void return
   return Builder->CreateRetVoid();

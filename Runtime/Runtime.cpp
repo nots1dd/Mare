@@ -56,14 +56,14 @@ extern "C"
 {
 
   // Print helpers
-  MARE_COMPILER_RT_API void __mare_printc(char x) { Mare::RT::print("%c\n", x); }
+  MARE_COMPILER_RT_API void __mare_printc(char x) { Mare::RT::print("%c", x); }
   MARE_COMPILER_RT_API void __mare_printstr(char* x) { Mare::RT::print("%s", x); }
-  MARE_COMPILER_RT_API void __mare_printf(F32 x) { Mare::RT::print("%f\n", x); }
-  MARE_COMPILER_RT_API void __mare_printd(F64 x) { Mare::RT::print("%f\n", x); }
-  MARE_COMPILER_RT_API void __mare_printi8(int8_t x) { Mare::RT::print("%" PRId8 "\n", x); }
-  MARE_COMPILER_RT_API void __mare_printi16(int16_t x) { Mare::RT::print("%" PRId16 "\n", x); }
-  MARE_COMPILER_RT_API void __mare_printi32(int32_t x) { Mare::RT::print("%" PRId32 "\n", x); }
-  MARE_COMPILER_RT_API void __mare_printi64(int64_t x) { Mare::RT::print("%" PRId64 "\n", x); }
+  MARE_COMPILER_RT_API void __mare_printf(F32 x) { Mare::RT::print("%f", x); }
+  MARE_COMPILER_RT_API void __mare_printd(F64 x) { Mare::RT::print("%f", x); }
+  MARE_COMPILER_RT_API void __mare_printi8(int8_t x) { Mare::RT::print("%" PRId8, x); }
+  MARE_COMPILER_RT_API void __mare_printi16(int16_t x) { Mare::RT::print("%" PRId16, x); }
+  MARE_COMPILER_RT_API void __mare_printi32(int32_t x) { Mare::RT::print("%" PRId32, x); }
+  MARE_COMPILER_RT_API void __mare_printi64(int64_t x) { Mare::RT::print("%" PRId64, x); }
 
   MARE_COMPILER_RT_API auto putchard(F64 x) -> F64
   {
